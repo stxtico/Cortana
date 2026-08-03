@@ -7,13 +7,17 @@ and rationale — this file is the operating summary.
 
 **Phase:** 0 — Environment
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
-**Model:** Gemma 4 12B Unified (Q4, ~7.5GB, multimodal — covers vision too)
+**Model:** Gemma 4 12B Unified (Q4, ~7.5GB, multimodal — covers vision too), Ollama tag
+`gemma4:12b`
 
 > Update this block every session. It's the first thing to read and the thing most likely
 > to be stale.
 
-**Done:** nothing yet
-**Next:** A0 — repo skeleton and model benchmark
+**Done:** A0 — repo skeleton, uv project, `config/cortana.toml`, `scripts/bench.py`.
+Baseline on `gemma4:12b`: warm TTFT ~4.1-4.2s, ~55-58 tok/s, flat across 1K/8K/32K context
+(first run per depth is inflated by Ollama reloading on `num_ctx` change — ignore those).
+Saved to `logs/bench-2026-08-03.json`.
+**Next:** A1 — streaming LLM client (`services/brain/client.py`)
 
 ## Architecture
 
