@@ -1,0 +1,13 @@
+# CORTANA — all tunables. No magic numbers in code.
+
+[models]
+fast    = ""
+primary = "gemma4:12b"
+heavy   = ""
+alt     = ""
+
+[audio]
+
+[latency]
+
+[memory]
