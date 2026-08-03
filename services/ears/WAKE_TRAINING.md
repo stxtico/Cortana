@@ -287,6 +287,115 @@ non-discriminating, consistent with the training run's own reported accuracy 0.5
 recall 0.0 for a model this undertrained, not a sign of a broken export). Pipeline
 mechanics confirmed end to end; model *quality* is what the full-scale run is for.
 
+## Hard-negative save path — verified with a deliberate reject
+
+Before trusting `services/ears/hard_negatives/` for the full run, forced a real
+reject rather than just reasoning about the code: temporarily set
+`[audio.wake].threshold` to `0.0000001` in `cortana.toml` so any ambient sound
+triggers, ran a 20s probe. All 10 triggers correctly rejected (none said
+"jarvis") and all 10 saved as real WAV files with matching `manifest.jsonl`
+entries. Save path confirmed working — the previously-empty directory was purely
+because the capability postdated the run that had genuine false accepts, not a
+bug. Deleted the artificially-forced test clips afterward (near-zero threshold
+noise isn't representative) and reverted the config.
+
+## Voice diversity: 6 Piper voices, not 1
+
+The notebook's own default only uses one voice (`en_US-libritts_r-medium`,
+multi-speaker LibriTTS). Added 5 more spanning accent and gender:
+
+| Voice | Region | Gender |
+|---|---|---|
+| `en_US-libritts_r-medium` | US | multi-speaker |
+| `en_US-amy-medium` | US | F |
+| `en_US-ryan-medium` | US | M |
+| `en_GB-alan-medium` | GB | M |
+| `en_GB-northern_english_male-medium` | GB (northern) | M |
+| `en_GB-jenny_dioco-medium` | GB | F |
+
+**These required a real conversion pipeline, not just a download** — the actual
+work, since it's not documented anywhere obvious:
+
+1. `piper-sample-generator`'s own v2.0.0 release only ships `.pt` checkpoints for
+   **one English voice** (the libritts_r one we already had); the other three are
+   German/French/Dutch. No additional English `.pt` files exist there.
+2. Found the real source: `rhasspy/piper-checkpoints` on HuggingFace hosts
+   PyTorch Lightning `.ckpt` training checkpoints for many more voices (these are
+   what produced the deployed `.onnx` voices, several hundred MB each, `dict`
+   with optimizer state etc. — not directly loadable by `generate_samples`).
+3. Wrote `convert_checkpoint.py`: loads the `.ckpt` via
+   `piper_train.vits.lightning.VitsModel.load_from_checkpoint(ckpt_path,
+   dataset=None, weights_only=False)` (Lightning's `save_hyperparameters()` means
+   no config args need to be passed manually), extracts `model.model_g` (the
+   `SynthesizerTrn` generator submodule — confirmed by reading `generate_audio()`
+   in `piper_sample_generator/__main__.py`, which calls `model.enc_p`/`emb_g`/
+   `dp`/`flow`/`dec` directly, exactly the generator's own submodules, no
+   wrapper), and `torch.save()`s it alone — matching exactly what
+   `en_US-libritts_r-medium.pt` already was.
+   - Needed `weights_only=False` **passed explicitly** to `load_from_checkpoint`,
+     not just the `compat_patch.py` default — Lightning passes `weights_only`
+     to `torch.load` as an explicit kwarg, which `setdefault()`-style patching
+     doesn't override.
+   - Needed `pytorch_lightning` installed (one-time, not needed by training
+     itself).
+4. **Found and fixed a real bug this surfaced**: `generate_audio()` calls
+   `model.emb_g(speaker_1)` unconditionally, but `SynthesizerTrn` only creates
+   `emb_g` when `n_speakers > 1` (confirmed in `models.py`) — **every
+   single-speaker voice would crash** with `AttributeError: 'SynthesizerTrn'
+   object has no attribute 'emb_g'`. This is genuinely orthogonal to the
+   checkpoint-conversion work — it's a gap in `generate_samples` itself that only
+   surfaces once you try a single-speaker voice, which the notebook's own
+   single-voice default never does. Patched `generate_audio()` to skip speaker
+   embedding when `getattr(model, "n_speakers", 1) <= 1`, mirroring the identical
+   branch already in `SynthesizerTrn.forward()`.
+5. Verified every voice individually, not just that conversion didn't crash —
+   generated a real "hey cortana" clip per voice, transcribed with this repo's
+   own `Transcriber`. Two voices failed this check:
+   - `en_GB-southern_english_female` has no training checkpoint at all in
+     `piper-checkpoints` (only the deployed `.onnx`) — never attempted.
+   - `en_GB-alba` converted and generated cleanly (no crash) but consistently
+     mispronounced "cortana" across 5 separate clips (`"Hiko Taino"`, `"He
+     called Tanner"`, etc.) — not a fluke, a real quality problem specific to
+     that voice/checkpoint for this word. Replaced with `en_GB-cori` (no
+     `config.json` published for it — dead end) then `en_GB-jenny_dioco`, which
+     passed (2 of 4 test clips transcribed exactly, the other 2 recognizably
+     close — normal TTS/ASR variance, not systematic failure).
+6. `generate_multivoice_positives.py`: splits `n_samples`/`n_samples_val` evenly
+   across all 6 voices with unique per-voice filenames, writes directly into
+   `train.py`'s expected `positive_train`/`positive_test` directories. Run this
+   **before** `train.py --generate_clips` — it'll see enough positives already
+   exist and skip that part, while still generating negatives/adversarial text
+   normally. Tested at small scale (12 samples, 2/voice) before trusting it.
+
+## Throughput logging — the dry run's slowdown mystery, solved
+
+The dry run showed step rate collapsing from ~140 it/s to ~3 it/s partway
+through, unexplained at the time. Added logging to `train.py`'s training loop
+(`throughput_log.jsonl`, interval configurable via `OWW_THROUGHPUT_LOG_INTERVAL`,
+defaults to every 100 steps) rather than parsing tqdm's carriage-return output,
+and re-ran the dry run to capture it cleanly.
+
+**Root cause, found from the log, not guessed**: `train_model()`'s sequence 1
+sets `val_steps = np.linspace(steps - int(steps*0.25), steps, 20)` — validation
+checkpoints are **20 fixed checks concentrated in the last 25%** of steps,
+regardless of how big `steps` is. The dry run's slowdown began at step 750 out of
+1000 — exactly the 75% mark. Not a runaway degradation; a fixed-count cost that
+becomes a *smaller* fraction of total time as `steps` grows. Sequences 2 and 3
+(each `steps/10`) spread their 20 validations across their *entire* range instead
+of just the last quarter, so they ran uniformly slower in the dry run — but at
+full scale their range is 10x bigger too, so validation stays similarly sparse
+relative to sequence 1's tail.
+
+**Revised wall-clock estimate for training, much lower than originally guessed**:
+roughly **15-45 minutes** for the full 50,000-step regime (down from the
+original 3-3.5 hour guess), because the validation overhead is ~20 checks per
+sequence total, not something that scales with step count. The remaining honest
+uncertainty: the full run's `batch_n_per_class` for the ACAV100M component is
+larger (1024 vs. the dry run's 256) — a 4x bigger batch could slow the
+steps/sec rate itself, independent of validation, in a way not tested at that
+exact scale. Generation + augmentation remains the more confidently-estimated
+cost at ~2-2.5 hours (scales linearly with clip count, already measured).
+
 ## Decisions to make before running this
 
 1. **Wake phrase exact wording** — **"hey cortana" is the primary phrase** for the
