@@ -22,7 +22,7 @@ sample_rate = 16000
 frame_size  = 512   # samples/frame (32ms @ 16kHz) — silero-vad requires exactly this; openWakeWord buffers across frames so it works fine at this size too
 
 [audio.wake]
-model      = "hey_jarvis"   # stand-in bundled openWakeWord model — no "hey cortana" model exists yet, needs training on real voice samples (see services/ears/WAKE_TRAINING.md)
+model      = "config/models/wake/hey_cortana.onnx"   # trained model — see services/ears/WAKE_TRAINING.md
 threshold  = 0.5
 debounce_s = 2.0   # ignore new detections within this long of the last one — openWakeWord's internal embedding window (~1-2s) still holds the wake phrase right after a detection, so short utterances can spuriously re-trigger the instant we return to listening
 
@@ -32,7 +32,7 @@ debounce_s = 2.0   # ignore new detections within this long of the last one — 
 # actually appears before entering RECORDING. Costs one STT call (~150-680ms observed)
 # per trigger only, not per frame.
 verify              = true
-verify_phrase       = "jarvis"   # substring (case-insensitive) the verification transcript must contain
+verify_phrase       = "cortana"   # substring (case-insensitive) the verification transcript must contain
 verify_lookback_ms  = 1500       # audio before the trigger frame to include — openWakeWord's detection can fire after the phrase already started
 verify_lookahead_ms = 500        # additional audio captured after the trigger frame before running the verification transcription
 

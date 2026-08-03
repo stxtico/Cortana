@@ -1,15 +1,17 @@
 # Training a real "hey cortana" wake word
 
-`wake.py` currently runs on `hey_jarvis`, one of openWakeWord's bundled pretrained
-models — a stand-in, not the target phrase. Calibration against live background
-speech (`scripts/wake_calibration.py`, see session logs) showed the stand-in has a
-real false-accept problem on conversational audio, and confidence score alone can't
-separate real detections from false ones. A verification gate (STT confirms the
-phrase before entering RECORDING, `[audio.wake].verify` in `cortana.toml`) works
-around this for now. The actual fix is training the right model instead of tuning
-the wrong one.
+**Status: done.** `wake.py` now runs on a trained `hey_cortana` model
+(`config/models/wake/hey_cortana.onnx`), not the `hey_jarvis` stand-in. See
+"Final result" near the end of this document for the live comparison that
+justified the swap. Everything below is the process that got there, kept
+because the compatibility fixes and lessons apply directly to training a second
+model later (e.g. bare "cortana", see the decision section below).
 
-This document is a plan, not a completed pipeline — nothing here has been run yet.
+Original problem: the `hey_jarvis` stand-in had a real false-accept problem on
+conversational audio, and confidence score alone couldn't separate real
+detections from false ones. A verification gate (STT confirms the phrase before
+entering RECORDING, `[audio.wake].verify` in `cortana.toml`) worked around this
+temporarily. Training the right model was the actual fix.
 
 ## Why synthetic, not recorded samples
 
@@ -437,3 +439,57 @@ Drop the trained `.onnx` file somewhere under the repo (e.g.
 `cortana.toml` at that path. `wake.py`'s `_resolve_model_path()` already falls back
 to treating `model` as a direct path if it isn't one of the bundled names, so no
 code change should be needed — just the config value and re-running calibration.
+
+## Full run — actual numbers
+
+Ran with the finalized config: 20,000 positive train / 3,000 val samples split
+across the 6 voices, 50,000 training steps, full MIT RIR set (270 clips), 3,400
+background clips (2,500 AudioSet + 900 MUSAN). Total wall-clock: **~50 minutes**
+end to end (generation+augmentation ~34 min, training ~15 min across all 3
+sequences) — far faster than either the original ~5-7h guess or even the
+revised ~2.5-3h estimate. The throughput-logging investigation correctly
+predicted training would be fast at full scale; generation/augmentation also
+came in well under its linear-scaling estimate, plausibly because per-clip
+overhead (model loading, etc.) amortizes better at volume than the dry run's
+tiny scale suggested.
+
+Immediate sanity checks after training, before the live test: loading via the
+actual production `wake.py` code path, silence scored a clean `0.0` (vs. the
+dry-run model's noisy ~0.04 baseline), and a synthesized "hey cortana" clip
+produced a sharp, well-defined peak (0.81-0.97 across 4 consecutive frames,
+then dropping back to near-zero) — real discrimination, not noise, unlike the
+dry-run model's flat non-response.
+
+## Final result — live comparison against the hey_jarvis + verification baseline
+
+Same protocol as the baseline test earlier in this session: 3 minutes,
+continuous unrelated speech for the first two minutes (no wake phrase), then
+several genuine "hey cortana" utterances at the end. Bar to clear: fewer than
+the baseline's 2-of-6 false accepts surviving verification, and zero genuine
+detections wrongly rejected.
+
+**Result: 0 false accepts survived verification. 0 genuine detections wrongly
+rejected.** 12 total triggers formed 6 clear pairs — a genuine detection
+immediately followed by a spurious re-trigger from openWakeWord's residual
+embedding window (same score to 3 decimals, 3.6-8s later — the same phenomenon
+identified with `hey_jarvis` earlier in this session, confirmed general to
+openWakeWord rather than specific to either model). All 6 passes matched a
+real "hey cortana" utterance in the follow-on transcript (including one
+realistic full sentence: "Hey Cortana launch... give me a summary of my
+assignments please"); all 6 rejects were the spurious echo saying unrelated
+things ("Thank you.", "Yeah.") and were correctly caught by verification. Note
+the pair gaps (3.6-8s) exceed `debounce_s` (2.0) — verification, not debounce,
+is what's catching these.
+
+Also better on raw discrimination, not just the verified outcome: zero frames
+across the full 180s exceeded 0.9 (genuine hits topped out at 0.89) — the
+`hey_jarvis` baseline's false accepts regularly hit 0.98-0.99, statistically
+indistinguishable in confidence from real hits. This model's confidence
+ceiling is lower and cleaner, a real, measured separation between real and
+false, not just a verification gate papering over an unusable score.
+
+**Not yet re-examined**: whether the verification gate can be relaxed or
+dropped now that the trained model shows real score separation (decision #4
+above still applies — more calibration data needed before trusting that,
+this was one 3-minute session). Bare "cortana" (decision #1) also remains
+unbuilt and carries the same false-accept-rate caveat noted there.

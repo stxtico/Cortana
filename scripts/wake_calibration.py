@@ -150,9 +150,8 @@ async def main(duration_s: float, status_interval_s: float = 5.0) -> None:
                 "permissions before trusting any capture from this run."
             )
         _safe_print(f"Mic confirmed live (first frame received). Listening for {duration_s:.0f}s now "
-                    f"(verify={'on' if verify_enabled else 'off'}, concurrent). Say \"hey jarvis\" "
-                    f"several times (that's the current stand-in model), mix in normal conversation "
-                    f"and background noise. Ctrl+C to stop early.\n")
+                    f"(model={wake_cfg['model']}, verify_phrase={verify_phrase!r}, verify="
+                    f"{'on' if verify_enabled else 'off'}, concurrent). Ctrl+C to stop early.\n")
 
         start_time = time.perf_counter()
         pending_frames = [first_frame]
