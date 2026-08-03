@@ -1,10 +1,12 @@
 # CORTANA — all tunables. No magic numbers in code.
 
 [models]
-fast    = ""
-primary = "gemma4:12b"
-heavy   = ""
-alt     = ""
+fast       = ""
+primary    = "gemma4:12b"
+heavy      = ""
+alt        = ""
+endpoint   = "http://localhost:11434"
+keep_alive = "30m"
 
 [thinking]
 # Defaults only — services/brain/client.py takes `think` as a per-call argument,

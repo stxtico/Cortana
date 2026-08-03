@@ -5,7 +5,7 @@ and rationale — this file is the operating summary.
 
 ## Current state
 
-**Phase:** 0 — Environment
+**Phase:** 1 — Voice loop
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 12B Unified (Q4, ~7.5GB, multimodal — covers vision too), Ollama tag
 `gemma4:12b`
@@ -13,13 +13,18 @@ and rationale — this file is the operating summary.
 > Update this block every session. It's the first thing to read and the thing most likely
 > to be stale.
 
-**Done:** A0 — repo skeleton, uv project, `config/cortana.toml`, `scripts/bench.py`.
-Corrected baseline on `gemma4:12b` (thinking mode off, `keep_alive=30m`, warmup call per
-context depth to absorb the `num_ctx` reload cost): TTFT ~500-650ms, ~58-62 tok/s, flat
-across 1K/8K/32K context. Still ~1.5x over the 400ms LLM TTFT budget — worth revisiting in
-A5. Saved to `logs/bench-2026-08-03.json`. (Earlier run in this file's history was wrong —
-default thinking mode meant TTFT was measuring "hidden reasoning done," not first token.)
-**Next:** A1 — streaming LLM client (`services/brain/client.py`)
+**Done:**
+- A0 — repo skeleton, uv project, `config/cortana.toml`, `scripts/bench.py`. Baseline on
+  `gemma4:12b` (thinking off, `keep_alive=30m`): TTFT ~500-650ms, ~58-62 tok/s, flat across
+  1K/8K/32K context — still ~1.5x over the 400ms budget, revisit in A5.
+  `logs/bench-2026-08-03.json`.
+- A1 — `services/brain/client.py`. Async `stream(messages, tools=None, think=False)` over
+  `/api/chat`, OpenAI-format tool calling passed through and smoke-tested (model correctly
+  emitted a `get_weather` tool_call, yielded as JSON). Per-call TTFT/duration/tokens logged
+  to `logs/brain.jsonl`. Warm TTFT ~730-965ms for a one-word answer — cold-load spike on
+  first call after idle confirmed, same cause as the bench.py fix.
+
+**Next:** A2 — Ears: wake word, VAD, STT (`services/ears/`)
 
 ## Architecture
 
