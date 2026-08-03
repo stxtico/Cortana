@@ -18,6 +18,25 @@ cad            = true    # A14 CAD generation and verification loop
 heavy          = true    # B3 heavy-tier reasoning mode
 
 [audio]
+sample_rate = 16000
+frame_size  = 512   # samples/frame (32ms @ 16kHz) — silero-vad requires exactly this; openWakeWord buffers across frames so it works fine at this size too
+
+[audio.wake]
+model      = "hey_jarvis"   # stand-in bundled openWakeWord model — no "hey cortana" model exists yet, needs training on real voice samples (see PLAN.md)
+threshold  = 0.5
+debounce_s = 2.0   # ignore new detections within this long of the last one — openWakeWord's internal embedding window (~1-2s) still holds the wake phrase right after a detection, so short utterances can spuriously re-trigger the instant we return to listening
+
+[audio.vad]
+threshold                = 0.5
+min_silence_duration_ms  = 300   # trailing silence required before an utterance is considered ended
+speech_pad_ms            = 30
+max_utterance_s          = 15    # safety cutoff if VAD never sees enough silence to end on its own (false wake trigger, user walks away mid-sentence)
+
+[audio.stt]
+model        = "large-v3-turbo"
+device       = "cuda"
+compute_type = "float16"
+language     = "en"
 
 [latency]
 

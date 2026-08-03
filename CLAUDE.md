@@ -26,8 +26,22 @@ and rationale — this file is the operating summary.
   every turn, which was the whole gap between this and bench.py's numbers (endpoint choice
   and `num_ctx` explicit-vs-default were both noise, isolated separately). Warm TTFT now
   ~360-390ms after the first call in a process, matching bench.py.
+- A2 — `services/ears/{wake,vad,stt}.py` + `pipeline.py`. openWakeWord (stand-in
+  `hey_jarvis` model — no "hey cortana" model trained yet, needs voice samples across
+  rooms), silero-vad (`VADIterator`, endpoint-only, real decision latency read off
+  `current_sample`/`temp_end`, not total utterance duration), faster-whisper
+  `large-v3-turbo` on GPU (needed `nvidia-cublas-cu12`/`nvidia-cudnn-cu12` pip packages +
+  their DLL dirs added to `PATH` — ctranslate2 doesn't find CUDA otherwise on Windows).
+  One shared 512-sample/32ms frame size feeds both wake and VAD. Verified end-to-end by
+  feeding a synthesized "Hey Jarvis, what time is it" WAV frame-by-frame through the real
+  objects (no live mic available in the build environment) — wake fired, VAD endpointed at
+  322ms, STT returned the exact question. Found and fixed a real bug this way: openWakeWord's
+  internal embedding window (~1-2s) still holds the wake phrase right after detection, so
+  short utterances spuriously re-triggered the instant the state machine returned to
+  listening — fixed with a `debounce_s` (2.0) in `[audio.wake]`. Live mic test still
+  outstanding — do this before trusting the wake/VAD tuning.
 
-**Next:** A2 — Ears: wake word, VAD, STT (`services/ears/`)
+**Next:** A3 — Voice: streaming TTS (`services/voice/tts.py`)
 
 ## Architecture
 
