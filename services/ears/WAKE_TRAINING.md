@@ -87,12 +87,48 @@ on either.)
 ### The actual decision
 
 Given the target is a real wake word this assistant depends on daily, not a demo,
-**Path A on Colab is the recommended default** — avoids a local WSL2/CUDA setup
-project of its own, uses the exact package versions the notebook is tested
-against, and matches how the models we're comparing against (`hey_jarvis`) were
-actually built. Path B is worth keeping in mind as a faster iteration loop for
-early phrase/voice-diversity experiments before committing to a full Path A run,
-not as the final training method.
+**Path A is the chosen method.** Environment: **WSL2 locally**, not Colab — this
+machine's own RTX 3080 Ti, driven directly rather than babysitting a browser tab.
+WSL2 was already installed (Ubuntu 26.04) with working GPU passthrough (`nvidia-smi`
+confirmed inside WSL2). Ubuntu 26.04 only ships Python 3.14 by default, which is
+too new for the pinned `tensorflow-cpu==2.8.1`; the fix is an isolated Python 3.10
+environment via `uv` (same tool this whole project already uses, just targeting
+Linux) rather than touching system Python.
+
+A community fork (`lgpearson1771/openwakeword-trainer`) was evaluated as a
+lower-friction alternative and **rejected after a provenance check**: all 6 commits
+landed in a single 30-minute window 5.5 months ago and nothing since (`pushed_at`
+== `created_at`), single author, 14 stars, and all 3 open issues are from different
+external users reporting unresolved failures — including a confirmed crash in the
+core clip-generation step (`ModuleNotFoundError: No module named 'generate_samples'`)
+and an independently-confirmed-broken RIR download, reported by two different users
+six weeks apart, still unfixed. No evidence anyone has gotten a working model out
+of it. Not used.
+
+Path B (`training_models.ipynb`) is worth keeping in mind as a faster iteration
+loop for early phrase/voice-diversity experiments, not as the final training
+method.
+
+### Data source verification — done before starting, not discovered mid-run
+
+Every URL/dataset call in the actual notebook (not a summary of it) was tested
+directly against this WSL2 environment before committing to a training run:
+
+| Source | Status | Note |
+|---|---|---|
+| Piper voice model (`en_US-libritts_r-medium.pt`, v2.0.0 release) | ✅ works | |
+| openWakeWord v0.5.1 release assets (embedding/melspectrogram models) | ✅ works | initial test showed 404s — that was a curl-loop artifact against GitHub's signed redirect URLs, not a real break; confirmed individually |
+| `openwakeword_features_ACAV100M_2000_hrs_16bit.npy` (17.3GB) | ✅ works | |
+| `validation_set_features.npy` | ✅ works | |
+| MIT RIR (`davidscripka/MIT_environmental_impulse_responses`) | ⏳ blocked on `ffmpeg` | modern `datasets` (5.0.1) needs `torchcodec`, which needs system `ffmpeg` — not installed by default in a fresh WSL2 Ubuntu, needs `sudo` (can't run non-interactively, waiting on a manual `sudo apt-get install -y ffmpeg`) |
+| AudioSet (`bal_train09.tar` direct file) | ❌ **dead** | `agkphysics/AudioSet` was restructured to parquet+config format (`data/bal_train/*.parquet`); the flat `.tar` path the notebook uses no longer exists (confirmed 404, not a redirect artifact this time). **Fix**: load via `datasets.load_dataset("agkphysics/AudioSet", "balanced", split="train", streaming=True)` instead of the hardcoded `wget` — structurally verified to reach the same missing-`ffmpeg` wall as the RIR dataset, meaning the actual data path resolves fine and just needs the same `ffmpeg` fix |
+| FMA (`rudraml/fma`) | ❌ **dead, no simple fix** | it's a script-based HF dataset (`fma.py`), and the modern `datasets` library has fully removed script support: `"Dataset scripts are no longer supported"`. Not a flag/version issue — `trust_remote_code=True` doesn't restore it, HF has fully deprecated the feature. Checked HF mirrors of MUSAN as a replacement (`csukuangfj/musan` is an empty stub, `confit/musan` is also script-based) — **replacement: MUSAN direct from its original OpenSLR source** (`https://www.openslr.org/resources/17/musan.tar.gz`, confirmed `200 OK`, 11.1GB, unchanged since 2017). MUSAN covers music AND noise in one static download, actually broader than what FMA alone provided |
+
+**Net**: two of the notebook's five data sources have rotted since it was written —
+this is exactly the "if a source is dead, find it before starting" scenario, not a
+hypothetical. AudioSet has a one-line fix (config-based loading). FMA needs a real
+substitution (MUSAN, static download, more robust than the HF-script approach it's
+replacing since it can't suffer the same deprecation).
 
 **Hard negatives**: `scripts/wake_calibration.py` now saves the actual audio for
 every rejected verification as a WAV file under `services/ears/hard_negatives/`
