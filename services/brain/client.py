@@ -19,6 +19,8 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
 BRAIN_LOG_PATH = ROOT / "logs" / "brain.jsonl"
 
+_client: httpx.AsyncClient | None = None
+
 
 def _load_config() -> dict:
     with CONFIG_PATH.open("rb") as f:
@@ -27,6 +29,22 @@ def _load_config() -> dict:
     if not models["primary"]:
         raise SystemExit(f"[models].primary is empty in {CONFIG_PATH}")
     return models
+
+
+def _get_client(endpoint: str) -> httpx.AsyncClient:
+    # Reused across calls - a new httpx.AsyncClient per call cost ~280ms in
+    # connection setup alone, a quarter of the whole latency budget.
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(base_url=endpoint, timeout=120.0)
+    return _client
+
+
+async def aclose() -> None:
+    global _client
+    if _client is not None:
+        await _client.aclose()
+        _client = None
 
 
 def _log_call(record: dict) -> None:
@@ -60,27 +78,27 @@ async def stream(
     first_token_time = None
     final = None
 
-    async with httpx.AsyncClient(base_url=endpoint, timeout=120.0) as client:
-        async with client.stream("POST", "/api/chat", json=payload) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                chunk = json.loads(line)
-                message = chunk.get("message", {})
-                content = message.get("content")
-                tool_calls = message.get("tool_calls")
+    client = _get_client(endpoint)
+    async with client.stream("POST", "/api/chat", json=payload) as resp:
+        resp.raise_for_status()
+        async for line in resp.aiter_lines():
+            if not line:
+                continue
+            chunk = json.loads(line)
+            message = chunk.get("message", {})
+            content = message.get("content")
+            tool_calls = message.get("tool_calls")
 
-                if first_token_time is None and (content or tool_calls or chunk.get("thinking")):
-                    first_token_time = time.perf_counter()
+            if first_token_time is None and (content or tool_calls or chunk.get("thinking")):
+                first_token_time = time.perf_counter()
 
-                if content:
-                    yield content
-                if tool_calls:
-                    yield json.dumps({"tool_calls": tool_calls})
+            if content:
+                yield content
+            if tool_calls:
+                yield json.dumps({"tool_calls": tool_calls})
 
-                if chunk.get("done"):
-                    final = chunk
+            if chunk.get("done"):
+                final = chunk
 
     end = time.perf_counter()
     ttft_ms = round(((first_token_time or end) - start) * 1000, 1)
@@ -108,6 +126,7 @@ async def _main() -> None:
     async for token in stream([{"role": "user", "content": prompt}]):
         print(token, end="", flush=True)
     print(f"\n\n(logged to {BRAIN_LOG_PATH})")
+    await aclose()
 
 
 if __name__ == "__main__":

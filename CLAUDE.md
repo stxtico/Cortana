@@ -21,8 +21,11 @@ and rationale — this file is the operating summary.
 - A1 — `services/brain/client.py`. Async `stream(messages, tools=None, think=False)` over
   `/api/chat`, OpenAI-format tool calling passed through and smoke-tested (model correctly
   emitted a `get_weather` tool_call, yielded as JSON). Per-call TTFT/duration/tokens logged
-  to `logs/brain.jsonl`. Warm TTFT ~730-965ms for a one-word answer — cold-load spike on
-  first call after idle confirmed, same cause as the bench.py fix.
+  to `logs/brain.jsonl`. Client reuses one module-level `httpx.AsyncClient` (`aclose()` to
+  shut down) — first version opened a new one per call, costing ~280ms in connection setup
+  every turn, which was the whole gap between this and bench.py's numbers (endpoint choice
+  and `num_ctx` explicit-vs-default were both noise, isolated separately). Warm TTFT now
+  ~360-390ms after the first call in a process, matching bench.py.
 
 **Next:** A2 — Ears: wake word, VAD, STT (`services/ears/`)
 
