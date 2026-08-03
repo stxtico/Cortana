@@ -38,9 +38,20 @@ against it for the rest of the project.
 > Build `services/brain/client.py`: a thin async Ollama client that streams tokens.
 >
 > Requirements: reads model name and endpoint from `cortana.toml`; exposes
-> `async def stream(messages, tools=None) -> AsyncIterator[str]`; supports OpenAI-format
-> tool calling; logs time-to-first-token and total duration as JSON lines to
-> `logs/brain.jsonl` on every call.
+> `async def stream(messages, tools=None, think: bool = False) -> AsyncIterator[str]`;
+> supports OpenAI-format tool calling; logs time-to-first-token and total duration as JSON
+> lines to `logs/brain.jsonl` on every call.
+>
+> `think` is a per-call argument, not a global toggle — `[thinking]` in `cortana.toml` holds
+> the default per use case (`conversational = false`, `cad = true`, `heavy = true`) but the
+> call site decides every time, so A14 (CAD) and B3 (heavy mode) can turn it on without
+> touching the voice loop.
+>
+> Gotcha already hit once in `scripts/bench.py`: with `think` unset, Ollama streams hidden
+> reasoning through a separate `"thinking"` field while `"response"` stays empty until
+> reasoning finishes, then flushes the final answer as one chunk. TTFT must be measured off
+> the first non-empty `response` OR `thinking` chunk, whichever arrives first — otherwise
+> you silently measure "reasoning done," not first token out.
 >
 > No agent loop yet, no tools yet. Just streaming plus instrumentation. Include a
 > `__main__` block I can run to send one prompt and watch tokens arrive.

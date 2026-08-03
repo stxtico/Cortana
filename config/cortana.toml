@@ -6,6 +6,15 @@ primary = "gemma4:12b"
 heavy   = ""
 alt     = ""
 
+[thinking]
+# Defaults only — services/brain/client.py takes `think` as a per-call argument,
+# never a global toggle, so any one call site (CAD, heavy mode) can turn it on
+# without affecting the conversational path. These values are what each call
+# site should pass by default.
+conversational = false   # voice loop (A1-A5) — never wait on hidden reasoning
+cad            = true    # A14 CAD generation and verification loop
+heavy          = true    # B3 heavy-tier reasoning mode
+
 [audio]
 
 [latency]
