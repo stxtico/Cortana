@@ -95,6 +95,12 @@ too new for the pinned `tensorflow-cpu==2.8.1`; the fix is an isolated Python 3.
 environment via `uv` (same tool this whole project already uses, just targeting
 Linux) rather than touching system Python.
 
+All training work (venv, cloned repos, datasets, generated clips) lives under
+`~/wake-training` in **WSL's native Linux filesystem, not `/mnt/c`** — the
+Windows-filesystem boundary is much slower for the tens of GB and thousands of
+small synthetic-clip files this involves. Only the finished `.onnx` gets copied
+back to `C:\dev\cortana` at the end.
+
 A community fork (`lgpearson1771/openwakeword-trainer`) was evaluated as a
 lower-friction alternative and **rejected after a provenance check**: all 6 commits
 landed in a single 30-minute window 5.5 months ago and nothing since (`pushed_at`
@@ -112,23 +118,74 @@ method.
 ### Data source verification — done before starting, not discovered mid-run
 
 Every URL/dataset call in the actual notebook (not a summary of it) was tested
-directly against this WSL2 environment before committing to a training run:
+directly — and re-tested against the **actual pinned `datasets==2.14.6`** used for
+training, not the newer `datasets` a first verification pass happened to use. That
+distinction mattered: it flipped one earlier finding.
 
 | Source | Status | Note |
 |---|---|---|
 | Piper voice model (`en_US-libritts_r-medium.pt`, v2.0.0 release) | ✅ works | |
-| openWakeWord v0.5.1 release assets (embedding/melspectrogram models) | ✅ works | initial test showed 404s — that was a curl-loop artifact against GitHub's signed redirect URLs, not a real break; confirmed individually |
+| openWakeWord v0.5.1 release assets (embedding/melspectrogram models) | ✅ works | initial test showed 404s — curl-loop artifact against GitHub's signed redirect URLs, not real; confirmed individually |
 | `openwakeword_features_ACAV100M_2000_hrs_16bit.npy` (17.3GB) | ✅ works | |
-| `validation_set_features.npy` | ✅ works | |
-| MIT RIR (`davidscripka/MIT_environmental_impulse_responses`) | ⏳ blocked on `ffmpeg` | modern `datasets` (5.0.1) needs `torchcodec`, which needs system `ffmpeg` — not installed by default in a fresh WSL2 Ubuntu, needs `sudo` (can't run non-interactively, waiting on a manual `sudo apt-get install -y ffmpeg`) |
-| AudioSet (`bal_train09.tar` direct file) | ❌ **dead** | `agkphysics/AudioSet` was restructured to parquet+config format (`data/bal_train/*.parquet`); the flat `.tar` path the notebook uses no longer exists (confirmed 404, not a redirect artifact this time). **Fix**: load via `datasets.load_dataset("agkphysics/AudioSet", "balanced", split="train", streaming=True)` instead of the hardcoded `wget` — structurally verified to reach the same missing-`ffmpeg` wall as the RIR dataset, meaning the actual data path resolves fine and just needs the same `ffmpeg` fix |
-| FMA (`rudraml/fma`) | ❌ **dead, no simple fix** | it's a script-based HF dataset (`fma.py`), and the modern `datasets` library has fully removed script support: `"Dataset scripts are no longer supported"`. Not a flag/version issue — `trust_remote_code=True` doesn't restore it, HF has fully deprecated the feature. Checked HF mirrors of MUSAN as a replacement (`csukuangfj/musan` is an empty stub, `confit/musan` is also script-based) — **replacement: MUSAN direct from its original OpenSLR source** (`https://www.openslr.org/resources/17/musan.tar.gz`, confirmed `200 OK`, 11.1GB, unchanged since 2017). MUSAN covers music AND noise in one static download, actually broader than what FMA alone provided |
+| `validation_set_features.npy` (176MB) | ✅ downloaded | |
+| MIT RIR (`davidscripka/MIT_environmental_impulse_responses`) | ✅ works | needed system `ffmpeg` (`datasets` needs `torchcodec` for audio decoding) |
+| FMA (`rudraml/fma`) | ✅ **actually works fine** | a first pass against newer `datasets` (5.0.1) hit `"Dataset scripts are no longer supported"` and looked dead — but that's a modern-`datasets`-only deprecation. Re-tested against the actual pinned `datasets==2.14.6` (which predates the deprecation) and it loads correctly, real rows, hundreds of metadata columns. **Downloaded MUSAN anyway** (see below) as supplementary background/noise data, not as a required FMA replacement |
+| AudioSet (`bal_train09.tar` direct file) | ❌ **dead** | `agkphysics/AudioSet` was restructured to parquet+config format (`data/bal_train/*.parquet`); the flat `.tar` path is gone (404, not a redirect artifact) |
+| AudioSet via `datasets.load_dataset(..., "balanced", ...)` | ❌ **also broken, differently** | works against modern `datasets` (5.0.1) but fails against the pinned `datasets==2.14.6` with `TypeError: must be called with a dataclass type or instance` — the old library can't parse the repo's current config-card metadata. Version-dependent breakage on both ends |
+| **AudioSet — actual fix** | ✅ works | bypass the `datasets` library for this one source entirely: `curl` a `data/bal_train/NN.parquet` file directly (verified `00.parquet`, 656MB, 500 rows), read with plain `pyarrow.parquet.read_table()`. Version-independent since it skips the library's config/script system altogether |
 
-**Net**: two of the notebook's five data sources have rotted since it was written —
-this is exactly the "if a source is dead, find it before starting" scenario, not a
-hypothetical. AudioSet has a one-line fix (config-based loading). FMA needs a real
-substitution (MUSAN, static download, more robust than the HF-script approach it's
-replacing since it can't suffer the same deprecation).
+MUSAN (original OpenSLR source, `https://www.openslr.org/resources/17/musan.tar.gz`,
+confirmed `200 OK`, 11.1GB) is downloading as extra background/noise variety since
+it was already identified before the FMA re-test corrected course — no harm in
+having both.
+
+### Environment setup, as actually built (not just planned)
+
+`~/wake-training/.venv` (Python 3.10 via `uv`) with the notebook's exact pins,
+**plus compatibility floors this specific combination needed** (`requirements.txt`
+records all of it):
+
+- `numpy<2`, `pyarrow<15` — modern default `pyarrow` removed the `PyExtensionType`
+  API `datasets==2.14.6` needs; modern `pyarrow` versions also drag in `numpy>=2`,
+  which then breaks `pyarrow<15` itself. Both floors are needed together.
+- `protobuf<3.20` — `tensorflow-cpu==2.8.1`'s generated `_pb2.py` files predate the
+  upb-based protobuf implementation; anything protobuf>=3.20-ish breaks it
+  (`TypeError: Descriptors cannot be created directly`).
+- `setuptools<82` — 82+ removed `pkg_resources` outright, which `webrtcvad` (and
+  likely others in this stack) still imports.
+- `torchcodec` — needed by `datasets` for audio decoding; needs system `ffmpeg`
+  (not installed by default in a fresh WSL2 Ubuntu).
+
+`~/wake-training/compat_patch.py` — `import compat_patch` before anything else in
+any training script. Patches things no version pin can fix, because the removed
+APIs simply don't exist anymore in any current torchaudio:
+- `torchaudio.info()` — removed in torchaudio 2.10+; `openwakeword/data.py` calls
+  it directly (`get_clip_duration` etc.) for `.num_channels`/`.sample_rate`/
+  `.num_frames`. Shimmed via `soundfile.info()`.
+- `torchaudio.list_audio_backends()` — removed; `speechbrain==0.5.14` expects it.
+  Stubbed to return `["soundfile"]`.
+- `torchaudio.set_audio_backend()` — removed; `torch_audiomentations` calls it at
+  **import time**. Stubbed as a no-op.
+
+`~/wake-training/piper-sample-generator/generate_samples.py` — a shim module.
+`openwakeword/train.py` does `from generate_samples import generate_samples`,
+expecting a root-level module (true when the notebook was written). The upstream
+`rhasspy/piper-sample-generator` repo has since been restructured into a proper
+package (`piper_sample_generator/__main__.py`, function nested inside) — **this is
+the exact same root cause as the rejected fork's issue #1**
+(`ModuleNotFoundError: No module named 'generate_samples'`), except it's a real
+upstream drift between `openwakeword` and `piper-sample-generator`, not something
+specific to that fork. The shim just re-exports the function from its new location.
+Also: `piper-sample-generator`'s own `pyproject.toml` wants `numpy>=2,<3`, directly
+conflicting with the `numpy<2` floor above — sidestepped by installing `piper-tts`
+directly rather than pip-installing `piper-sample-generator` as a package; only
+`sys.path` insertion (which `train.py` already does) is actually needed to reach
+`generate_samples`.
+
+**End-to-end synthesis confirmed working**: generated 3 real "hey cortana" clips
+via GPU, copied one back across to Windows and ran it through this repo's own
+`services/ears/stt.py` `Transcriber` (`large-v3-turbo`) as an independent sanity
+check — transcribed as `'Hey Cortana.'`, exact match.
 
 **Hard negatives**: `scripts/wake_calibration.py` now saves the actual audio for
 every rejected verification as a WAV file under `services/ears/hard_negatives/`
