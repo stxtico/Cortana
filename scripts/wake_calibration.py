@@ -44,7 +44,7 @@ def _safe_print(text: str) -> None:
         print(text.encode("ascii", errors="replace").decode("ascii"))
 
 
-async def main(duration_s: float) -> None:
+async def main(duration_s: float, status_interval_s: float = 5.0) -> None:
     with CONFIG_PATH.open("rb") as f:
         config = tomllib.load(f)["audio"]
 
@@ -102,6 +102,13 @@ async def main(duration_s: float) -> None:
     utterance_id = 0
     lookback: deque = deque(maxlen=lookback_frames_n)
 
+    # Live density check - the original 23-detection runs averaged ~1.3-2.0 frames/sec
+    # scoring above 0.9. Printed periodically so a too-quiet background can be caught
+    # and fixed instead of burning the full capture window on a non-representative test.
+    high_score_count = 0
+    listening_frame_count = 0
+    last_status_time = 0.0
+
     with stream:
         _safe_print("Opening mic stream, waiting for first frame...")
         try:
@@ -135,6 +142,18 @@ async def main(duration_s: float) -> None:
                 score = float(raw_model.predict(_to_int16(frame))[key])
                 latency_ms = (time.perf_counter() - infer_start) * 1000
                 log({"stage": "wake_score", "score": score, "latency_ms": latency_ms})
+
+                listening_frame_count += 1
+                if score >= 0.9:
+                    high_score_count += 1
+
+                elapsed = time.perf_counter() - start_time
+                if elapsed - last_status_time >= status_interval_s:
+                    last_status_time = elapsed
+                    listening_s = listening_frame_count * frame_duration_ms / 1000
+                    rate = high_score_count / listening_s if listening_s > 0 else 0.0
+                    _safe_print(f"  [status t={elapsed:.0f}s] frames>0.9: {high_score_count} over {listening_s:.1f}s "
+                                f"listening = {rate:.2f}/s (original runs: ~1.3-2.0/s)")
 
                 now = time.perf_counter()
                 if score >= threshold and (now - last_wake_time) > debounce_s:
@@ -194,5 +213,13 @@ async def main(duration_s: float) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=float, default=180.0)
+    parser.add_argument("--probe", action="store_true",
+                         help="Quick 20s check with frequent density status prints - confirm "
+                              "background audio is actually reaching the mic before committing "
+                              "to a full capture. Overrides --duration.")
     args = parser.parse_args()
-    asyncio.run(main(args.duration))
+
+    if args.probe:
+        asyncio.run(main(duration_s=20.0, status_interval_s=2.0))
+    else:
+        asyncio.run(main(args.duration))
