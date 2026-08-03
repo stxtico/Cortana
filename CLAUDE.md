@@ -26,44 +26,32 @@ and rationale — this file is the operating summary.
   every turn, which was the whole gap between this and bench.py's numbers (endpoint choice
   and `num_ctx` explicit-vs-default were both noise, isolated separately). Warm TTFT now
   ~360-390ms after the first call in a process, matching bench.py.
-- A2 — `services/ears/{wake,vad,stt}.py` + `pipeline.py`. openWakeWord (stand-in
-  `hey_jarvis` model — no "hey cortana" model trained yet, needs voice samples across
-  rooms), silero-vad (`VADIterator`, endpoint-only, real decision latency read off
-  `current_sample`/`temp_end`, not total utterance duration), faster-whisper
-  `large-v3-turbo` on GPU (needed `nvidia-cublas-cu12`/`nvidia-cudnn-cu12` pip packages +
-  their DLL dirs added to `PATH` — ctranslate2 doesn't find CUDA otherwise on Windows).
-  One shared 512-sample/32ms frame size feeds both wake and VAD. Verified end-to-end by
-  feeding a synthesized "Hey Jarvis, what time is it" WAV frame-by-frame through the real
-  objects (no live mic available in the build environment) — wake fired, VAD endpointed at
-  322ms, STT returned the exact question. Found and fixed a real bug this way: openWakeWord's
-  internal embedding window (~1-2s) still holds the wake phrase right after detection, so
-  short utterances spuriously re-triggered the instant the state machine returned to
-  listening — fixed with a `debounce_s` (2.0) in `[audio.wake]`. Live mic test still
-  outstanding — do this before trusting the wake/VAD tuning.
-- Live mic calibration (`scripts/wake_calibration.py`, 2 runs, 23 detections each):
-  confidence score does NOT separate real wake detections from false accepts — a
-  clear false accept on background conversational audio scored 0.987, above most
-  genuine "hey jarvis" hits. Real vs false ranges overlap almost entirely (both
-  roughly 0.5-0.99). Also: saying the actual target phrase "hey cortana" triggered
-  the `hey_jarvis` stand-in too, suggesting it keys on "hey [name]" cadence more
-  than "jarvis" specifically. VAD endpoint was flat 322.0ms every time (zero
-  variance) = `min_silence_duration_ms(300) + speech_pad_ms(30)`, confirming it's
-  deterministic by config, not data-dependent.
-- Added a second-stage verification gate (`[audio.wake].verify` in `cortana.toml`,
-  default on): on any trigger, grab a lookback+lookahead buffer
-  (`verify_lookback_ms`/`verify_lookahead_ms`), run STT, require `verify_phrase`
-  ("jarvis") actually appears before entering RECORDING. Mirrored into
-  `wake_calibration.py` so the fix could be tested with real mic data, not just
-  assumed. Live re-test (smaller sample, quieter background than the two runs
-  above): 1 genuine detection passed ('Hey, Jarvis.'), 1 false accept correctly
-  rejected ('Hello.', no "jarvis"). Verify latency wasn't flat — 181ms for the
-  short reject, 1054ms for the longer pass (lookback+lookahead audio length
-  varies) — wider than the ~150-300ms estimate that motivated this.
-- Training plan for a real "hey cortana" model documented at
-  `services/ears/WAKE_TRAINING.md` (openWakeWord's synthetic-TTS + hard-negative +
-  RIR-augmentation approach) — not yet executed, just planned. Once a model exists,
-  `wake.py`'s `_resolve_model_path()` already treats a non-bundled `model` config
-  value as a direct path, so switching over should just be a config change.
+- A2 — `services/ears/{wake,vad,stt}.py` + `pipeline.py`. silero-vad (`VADIterator`,
+  endpoint-only, real decision latency read off `current_sample`/`temp_end`) +
+  faster-whisper `large-v3-turbo` on GPU (needed `nvidia-cublas-cu12`/
+  `nvidia-cudnn-cu12` pip packages + their DLL dirs on `PATH` — ctranslate2 doesn't
+  find CUDA otherwise on Windows). One shared 512-sample/32ms frame size feeds both
+  wake and VAD. `debounce_s` (2.0) in `[audio.wake]` prevents openWakeWord's
+  internal embedding window (~1-2s post-detection) from spuriously re-triggering
+  right after a genuine detection.
+- Wake word: **trained model in production**, not the `hey_jarvis` stand-in.
+  Live calibration first proved score alone can't separate real detections from
+  false accepts on `hey_jarvis` (a false accept hit 0.987, above most genuine
+  hits) — added a second-stage STT verification gate
+  (`[audio.wake].verify`/`verify_phrase` in `cortana.toml`) as an interim fix,
+  then trained a real `hey_cortana` model (`config/models/wake/hey_cortana.onnx`):
+  20,000/3,000 positive samples across 6 Piper voices (US/GB, both genders),
+  50,000 steps, full MIT RIR + 3,400 background clips (AudioSet+MUSAN). Full run
+  took ~50 minutes on the 3080 Ti via WSL2 (see `services/ears/WAKE_TRAINING.md`
+  for the training-pipeline compatibility fixes and process — genuinely useful
+  if training a second model, e.g. bare "cortana", later). Live comparison
+  (same 3-minute continuous-speech-then-wake-phrase protocol against both
+  models): trained model beat the `hey_jarvis`+verification baseline outright —
+  0 false accepts survived verification vs. baseline's 2-of-6, 0 genuine
+  detections wrongly rejected vs. baseline's 1, and zero raw-score frames
+  exceeded 0.9 across 180s (baseline's false accepts regularly hit 0.98-0.99).
+  Verification gate stays on for now — one 3-minute session isn't enough data
+  to trust dropping it.
 
 **Next:** A3 — Voice: streaming TTS (`services/voice/tts.py`)
 
