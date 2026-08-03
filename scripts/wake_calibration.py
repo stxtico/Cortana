@@ -3,8 +3,11 @@ crossings) plus full VAD/STT latency for real detections. Not part of the produc
 pipeline - services/ears/pipeline.py only logs actual detections, this logs everything
 so a confidence-score distribution can be built before tuning any threshold.
 
-Mirrors pipeline.py's verification gate (same [audio.wake] config) so false-accept
-reduction can be measured with real mic data, not just assumed.
+Mirrors pipeline.py's concurrent verification gate (same [audio.wake] config, same
+recording-starts-immediately-verification-runs-in-parallel design) so results are
+directly comparable to production behavior. Rejected verification clips are saved as
+WAV files under services/ears/hard_negatives/ - real hard-negative training data for
+WAKE_TRAINING.md, not just the transcript text.
 """
 
 import argparse
@@ -23,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import numpy as np
 import sounddevice as sd
 from openwakeword.model import Model
+from scipy.io import wavfile
 
 from services.ears.stt import Transcriber
 from services.ears.vad import EndpointDetector
@@ -31,6 +35,8 @@ from services.ears.wake import _resolve_model_path
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
 OUT_PATH = ROOT / "logs" / "wake_calibration.jsonl"
+HARD_NEGATIVES_DIR = ROOT / "services" / "ears" / "hard_negatives"
+HARD_NEGATIVES_MANIFEST = HARD_NEGATIVES_DIR / "manifest.jsonl"
 
 
 def _to_int16(frame: np.ndarray) -> np.ndarray:
@@ -42,6 +48,25 @@ def _safe_print(text: str) -> None:
         print(text)
     except UnicodeEncodeError:
         print(text.encode("ascii", errors="replace").decode("ascii"))
+
+
+def _slug(text: str, max_len: int = 40) -> str:
+    keep = "".join(c if c.isalnum() else "_" for c in text)
+    return keep.strip("_")[:max_len] or "clip"
+
+
+def _save_hard_negative(audio: np.ndarray, sample_rate: int, utterance_id: int, score: float, text: str) -> str:
+    HARD_NEGATIVES_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    filename = f"{ts}_id{utterance_id}_{_slug(text)}.wav"
+    path = HARD_NEGATIVES_DIR / filename
+    wavfile.write(path, sample_rate, _to_int16(audio))
+    with HARD_NEGATIVES_MANIFEST.open("a") as f:
+        f.write(json.dumps({
+            "file": filename, "utterance_id": utterance_id, "wake_score": score,
+            "verify_text": text, "saved_at": datetime.now(timezone.utc).isoformat(),
+        }) + "\n")
+    return filename
 
 
 async def main(duration_s: float, status_interval_s: float = 5.0) -> None:
@@ -95,16 +120,21 @@ async def main(duration_s: float, status_interval_s: float = 5.0) -> None:
         log_f.write(json.dumps({"t": time.perf_counter(), "ts": datetime.now(timezone.utc).isoformat(), **record}) + "\n")
         log_f.flush()
 
+    async def run_verify(audio: np.ndarray):
+        return await asyncio.to_thread(stt.transcribe, audio)
+
     state = "listening"
     utterance_frames: list[np.ndarray] = []
     recording_start = 0.0
     last_wake_time = -debounce_s
     utterance_id = 0
     lookback: deque = deque(maxlen=lookback_frames_n)
+    pre_trigger_audio: list = []
+    verify_task = None
+    verify_task_start = 0.0
+    verify_confirmed = False
+    last_wake_score = 0.0
 
-    # Live density check - the original 23-detection runs averaged ~1.3-2.0 frames/sec
-    # scoring above 0.9. Printed periodically so a too-quiet background can be caught
-    # and fixed instead of burning the full capture window on a non-representative test.
     high_score_count = 0
     listening_frame_count = 0
     last_status_time = 0.0
@@ -120,9 +150,9 @@ async def main(duration_s: float, status_interval_s: float = 5.0) -> None:
                 "permissions before trusting any capture from this run."
             )
         _safe_print(f"Mic confirmed live (first frame received). Listening for {duration_s:.0f}s now "
-                    f"(verify={'on' if verify_enabled else 'off'}). Say \"hey jarvis\" several times "
-                    f"(that's the current stand-in model), mix in normal conversation and background "
-                    f"noise. Ctrl+C to stop early.\n")
+                    f"(verify={'on' if verify_enabled else 'off'}, concurrent). Say \"hey jarvis\" "
+                    f"several times (that's the current stand-in model), mix in normal conversation "
+                    f"and background noise. Ctrl+C to stop early.\n")
 
         start_time = time.perf_counter()
         pending_frames = [first_frame]
@@ -158,42 +188,69 @@ async def main(duration_s: float, status_interval_s: float = 5.0) -> None:
                 now = time.perf_counter()
                 if score >= threshold and (now - last_wake_time) > debounce_s:
                     last_wake_time = now
+                    last_wake_score = score
                     utterance_id += 1
                     log({"stage": "wake_detect", "utterance_id": utterance_id, "score": score, "latency_ms": latency_ms})
                     _safe_print(f"[{utterance_id}] WAKE detected, score={score:.3f}")
 
-                    if not verify_enabled:
-                        state = "recording"
-                        utterance_frames = []
-                        vad.reset()
-                        recording_start = now
-                        continue
-
-                    verify_start = time.perf_counter()
-                    lookahead = []
-                    for _ in range(lookahead_frames_n):
-                        lookahead.append(await asyncio.wait_for(frame_queue.get(), timeout=1.0))
-                    verify_audio = np.concatenate(list(lookback) + lookahead)
-                    verify_transcript = stt.transcribe(verify_audio)
-                    verify_latency_ms = (time.perf_counter() - verify_start) * 1000
-                    passed = verify_phrase in verify_transcript.text.lower()
-                    log({
-                        "stage": "verify", "utterance_id": utterance_id, "latency_ms": verify_latency_ms,
-                        "text": verify_transcript.text, "passed": passed,
-                    })
-                    _safe_print(f"[{utterance_id}] verify: '{verify_transcript.text}' -> {'PASS' if passed else 'REJECT'} ({verify_latency_ms:.0f}ms)")
-
-                    if passed:
-                        state = "recording"
-                        utterance_frames = []
-                        vad.reset()
-                        recording_start = time.perf_counter()
+                    state = "recording"
+                    utterance_frames = []
+                    vad.reset()
+                    recording_start = now
+                    pre_trigger_audio = list(lookback)
+                    verify_task = None
+                    verify_confirmed = not verify_enabled
 
             elif state == "recording":
                 utterance_frames.append(frame)
+
+                if not verify_confirmed:
+                    if verify_task is None and len(utterance_frames) >= lookahead_frames_n:
+                        verify_audio = np.concatenate(pre_trigger_audio + utterance_frames[:lookahead_frames_n])
+                        verify_task_start = time.perf_counter()
+                        verify_task = asyncio.ensure_future(run_verify(verify_audio))
+
+                    if verify_task is not None and verify_task.done():
+                        transcript = verify_task.result()
+                        verify_latency_ms = (time.perf_counter() - verify_task_start) * 1000
+                        passed = verify_phrase in transcript.text.lower()
+                        log({
+                            "stage": "verify", "utterance_id": utterance_id, "latency_ms": verify_latency_ms,
+                            "text": transcript.text, "passed": passed,
+                        })
+                        _safe_print(f"[{utterance_id}] verify: '{transcript.text}' -> {'PASS' if passed else 'REJECT'} ({verify_latency_ms:.0f}ms)")
+                        if not passed:
+                            fname = _save_hard_negative(verify_audio, sample_rate, utterance_id, last_wake_score, transcript.text)
+                            _safe_print(f"[{utterance_id}] saved hard negative: {fname}")
+                            state = "listening"
+                            utterance_frames = []
+                            continue
+                        verify_confirmed = True
+
                 vad_event = vad.process_frame(frame)
                 timed_out = (time.perf_counter() - recording_start) > max_utterance_s
                 if (vad_event is not None and vad_event.kind == "end") or timed_out:
+                    if not verify_confirmed:
+                        if verify_task is None:
+                            verify_audio = np.concatenate(pre_trigger_audio + utterance_frames)
+                            verify_task_start = time.perf_counter()
+                            verify_task = asyncio.ensure_future(run_verify(verify_audio))
+                        transcript = await verify_task
+                        verify_latency_ms = (time.perf_counter() - verify_task_start) * 1000
+                        passed = verify_phrase in transcript.text.lower()
+                        log({
+                            "stage": "verify", "utterance_id": utterance_id, "latency_ms": verify_latency_ms,
+                            "text": transcript.text, "passed": passed,
+                        })
+                        _safe_print(f"[{utterance_id}] verify: '{transcript.text}' -> {'PASS' if passed else 'REJECT'} ({verify_latency_ms:.0f}ms)")
+                        if not passed:
+                            verify_audio_full = np.concatenate(pre_trigger_audio + utterance_frames)
+                            fname = _save_hard_negative(verify_audio_full, sample_rate, utterance_id, last_wake_score, transcript.text)
+                            _safe_print(f"[{utterance_id}] saved hard negative: {fname}")
+                            state = "listening"
+                            utterance_frames = []
+                            continue
+
                     vad_latency_ms = vad_event.latency_ms if vad_event else max_utterance_s * 1000
                     log({"stage": "vad_end", "utterance_id": utterance_id, "latency_ms": vad_latency_ms, "timed_out": timed_out})
 

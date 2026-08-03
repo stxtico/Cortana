@@ -1,13 +1,22 @@
 """Wires wake -> VAD -> STT into one utterance stream. Owns the mic input.
 
 State machine: LISTENING (feed wake, one frame at a time, keep a rolling lookback
-buffer) -> on detection -> VERIFYING (if enabled: grab lookback + a short lookahead,
-run STT, require the wake phrase actually appears) -> RECORDING (feed VAD, accumulate
-audio until an endpoint) -> transcribe -> yield -> back to LISTENING.
+buffer) -> on detection -> RECORDING (feed VAD immediately; verification runs
+concurrently in a background thread over the lookback + first lookahead frames of
+the same recording, not sequentially before it) -> transcribe -> yield -> back to
+LISTENING. If verification rejects, the recording is discarded, whether that's
+noticed mid-recording (checked every frame) or only at finalize time.
 
 Verification exists because wake-word confidence score doesn't separate real
 detections from false accepts - calibration runs against background speech showed a
 false accept score above most genuine hits. Toggle via [audio.wake].verify.
+
+Verification used to run before RECORDING started, costing ~200-1050ms of pure
+added latency on every trigger including genuine ones. Running it concurrently
+with RECORDING hides that cost on true positives - verification is usually resolved
+before VAD would naturally end the utterance anyway, so the fast path pays nothing
+extra. Only very short genuine utterances (VAD ends before verification resolves)
+pay a residual wait, bounded by whatever verification time hadn't yet elapsed.
 """
 
 import asyncio
@@ -22,7 +31,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
-from services.ears.stt import Transcriber
+from services.ears.stt import Transcriber, Transcript
 from services.ears.vad import EndpointDetector
 from services.ears.wake import WakeWordDetector
 
@@ -97,6 +106,19 @@ async def listen() -> AsyncIterator[str]:
     recording_start = 0.0
     last_wake_time = -debounce_s
     lookback: deque[np.ndarray] = deque(maxlen=lookback_frames_n)
+    pre_trigger_audio: list[np.ndarray] = []
+    verify_task: asyncio.Task | None = None
+    verify_task_start = 0.0
+    verify_confirmed = False
+
+    async def _run_verify(audio: np.ndarray) -> Transcript:
+        return await asyncio.to_thread(stt.transcribe, audio)
+
+    def _log_verify(text: str, latency_ms: float, passed: bool) -> None:
+        _log({
+            "stage": "verify", "utterance_id": utterance_id, "latency_ms": latency_ms,
+            "text": text, "passed": passed,
+        })
 
     with stream:
         while True:
@@ -111,36 +133,53 @@ async def listen() -> AsyncIterator[str]:
                     utterance_id += 1
                     _log({"stage": "wake", "utterance_id": utterance_id, "latency_ms": event.latency_ms, "score": event.score})
 
-                    if not verify_enabled:
-                        state = "recording"
-                        utterance_frames = []
-                        vad.reset()
-                        recording_start = now
-                        continue
-
-                    verify_start = time.perf_counter()
-                    lookahead = [await frame_queue.get() for _ in range(lookahead_frames_n)]
-                    verify_audio = np.concatenate(list(lookback) + lookahead)
-                    verify_transcript = stt.transcribe(verify_audio)
-                    verify_latency_ms = (time.perf_counter() - verify_start) * 1000
-                    passed = verify_phrase in verify_transcript.text.lower()
-                    _log({
-                        "stage": "verify", "utterance_id": utterance_id, "latency_ms": verify_latency_ms,
-                        "text": verify_transcript.text, "passed": passed,
-                    })
-
-                    if passed:
-                        state = "recording"
-                        utterance_frames = []
-                        vad.reset()
-                        recording_start = time.perf_counter()
-                    # else: discard, stay in listening, lookback keeps rolling
+                    state = "recording"
+                    utterance_frames = []
+                    vad.reset()
+                    recording_start = now
+                    pre_trigger_audio = list(lookback)
+                    verify_task = None
+                    verify_confirmed = not verify_enabled
 
             elif state == "recording":
                 utterance_frames.append(frame)
+
+                if not verify_confirmed:
+                    if verify_task is None and len(utterance_frames) >= lookahead_frames_n:
+                        verify_audio = np.concatenate(pre_trigger_audio + utterance_frames[:lookahead_frames_n])
+                        verify_task_start = time.perf_counter()
+                        verify_task = asyncio.ensure_future(_run_verify(verify_audio))
+
+                    if verify_task is not None and verify_task.done():
+                        transcript = verify_task.result()
+                        latency_ms = (time.perf_counter() - verify_task_start) * 1000
+                        passed = verify_phrase in transcript.text.lower()
+                        _log_verify(transcript.text, latency_ms, passed)
+                        if not passed:
+                            state = "listening"
+                            utterance_frames = []
+                            continue
+                        verify_confirmed = True
+
                 vad_event = vad.process_frame(frame)
                 timed_out = (time.perf_counter() - recording_start) > max_utterance_s
                 if (vad_event is not None and vad_event.kind == "end") or timed_out:
+                    if not verify_confirmed:
+                        # VAD ended before verification resolved (or even started, for a
+                        # very short utterance) - we need an answer before finalizing.
+                        if verify_task is None:
+                            verify_audio = np.concatenate(pre_trigger_audio + utterance_frames)
+                            verify_task_start = time.perf_counter()
+                            verify_task = asyncio.ensure_future(_run_verify(verify_audio))
+                        transcript = await verify_task
+                        latency_ms = (time.perf_counter() - verify_task_start) * 1000
+                        passed = verify_phrase in transcript.text.lower()
+                        _log_verify(transcript.text, latency_ms, passed)
+                        if not passed:
+                            state = "listening"
+                            utterance_frames = []
+                            continue
+
                     latency_ms = vad_event.latency_ms if vad_event else max_utterance_s * 1000
                     _log({"stage": "vad", "utterance_id": utterance_id, "latency_ms": latency_ms, "timed_out": timed_out})
 
