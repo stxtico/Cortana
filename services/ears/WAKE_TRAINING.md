@@ -197,6 +197,96 @@ sessions in this project's history produced false accepts whose *text* is known
 at the time, and the in-memory clips are gone. Don't try to recover them; just
 accumulate real ones from here forward.
 
+## Dry-run checklist — every fix, so the full run doesn't rediscover them
+
+Ran a deliberately small dry run first (300 positive samples, 1000 training steps,
+40 RIR clips, 60 background clips) specifically to hit these before committing
+hours to the full-scale version. In the order they were actually hit:
+
+1. **`webrtcvad` needs a C compiler** — no prebuilt wheel for this platform/Python
+   combo. Needs `sudo apt-get install -y build-essential` before `uv pip install`.
+2. **`pyarrow` + `numpy` version floor, together** — modern default `pyarrow`
+   dropped the `PyExtensionType` API `datasets==2.14.6` needs; modern `pyarrow`
+   also requires `numpy>=2`, which then breaks `pyarrow<15` itself. Pin both:
+   `pyarrow<15`, `numpy<2`.
+3. **`setuptools<82`** — 82+ removed `pkg_resources` outright; `webrtcvad` (and
+   others in this stack) still import it.
+4. **`torchcodec` + system `ffmpeg`** — `datasets` needs `torchcodec` for audio
+   decoding, which needs `ffmpeg` installed system-wide (`sudo apt-get install -y
+   ffmpeg`), not just `pip install torchcodec`.
+5. **Three removed `torchaudio` APIs, all shimmed in `compat_patch.py`** (`import
+   compat_patch` before anything else in any training script):
+   - `torchaudio.info()` — removed in torchaudio 2.10+; `openwakeword/data.py`
+     calls it directly. Shimmed via `soundfile.info()`.
+   - `torchaudio.list_audio_backends()` — removed; `speechbrain==0.5.14` expects
+     it. Stubbed to return `["soundfile"]`.
+   - `torchaudio.set_audio_backend()` — removed; `torch_audiomentations` calls it
+     at **import time**. Stubbed as a no-op.
+6. **`torch.load` defaults to `weights_only=True` since PyTorch 2.6** —
+   deep-phonemizer's checkpoint (its own official hosted model, trusted source)
+   pickles a custom class that trips the new default. Patched `torch.load` to
+   default `weights_only=False` in `compat_patch.py`.
+7. **`generate_samples` root-module shim** — `train.py` does `from
+   generate_samples import generate_samples`, expecting a root-level module (true
+   when the notebook was written); `piper-sample-generator` has since restructured
+   into a package (`piper_sample_generator/__main__.py`). This is the same root
+   cause as the rejected fork's issue #1, but real upstream drift, not
+   fork-specific. Fixed with `piper-sample-generator/generate_samples.py`
+   re-exporting the function.
+8. **`piper-sample-generator`'s own `numpy>=2,<3` requirement conflicts with floor
+   #2** — don't `pip install -e ./piper-sample-generator` as a package; install
+   `piper-tts` directly and rely on `sys.path` insertion (which `train.py` already
+   does) to reach `generate_samples`.
+9. **`train.py` never passes `model=` to `generate_samples`** — relies on a
+   default the current `piper_sample_generator` no longer provides (required arg,
+   no default). Same "Piper v2+ `model=`" issue the rejected fork's patches
+   addressed. Fixed by wrapping the shim function with `functools.wraps` and a
+   default pointing at the downloaded voice model.
+10. **Generated clips are 22050Hz, not 16000Hz** — `en_US-libritts_r-medium`'s
+    native rate; `generate_samples` has no target-sample-rate option, and the
+    augmentation pipeline hard-assumes 16kHz and raises if it isn't
+    (`ValueError: Error! Clip does not have the correct sample rate!`). Added
+    `resample_clips.py` as a required post-generation, pre-augmentation step.
+11. **A crashed run leaves partial feature `.npy` files that get silently
+    "already exists, skipping" on retry** — delete them or pass `--overwrite` to
+    `train.py` when resuming after any failure during `--augment_clips`.
+12. **`onnxscript` required for torch's modern ONNX export path** — without it,
+    `torch.onnx.export` fails at the very last step (`ModuleNotFoundError: No
+    module named 'onnxscript'`) after training has already completed. Install it
+    up front, not as an afterthought.
+13. **`onnxscript` needs modern `protobuf`, which conflicts with the
+    `tensorflow-cpu==2.8.1` pin** — resolved by **dropping TensorFlow entirely**
+    (`tensorflow-cpu`, `tensorflow_probability`, `onnx_tf`). Confirmed via source
+    inspection that TF is only imported inside `train.py`'s
+    `convert_onnx_to_tflite()`, gated behind `--convert_to_tflite`, which we never
+    pass — we only need `.onnx` (`wake.py` loads via `onnxruntime`). No reason to
+    fight that pin at all once you know the tflite path is truly optional.
+14. **`train.py`'s `--convert_to_tflite` gate is buggy and runs unconditionally** —
+    every CLI flag defaults to the *string* `"False"` (`argparse` quirk:
+    `action="store_true"` paired with `default="False"`), and `bool("False")` is
+    `True` in Python. Every other flag correctly checks `if args.X is True:`
+    (identity, not truthiness) — this one checks `if args.convert_to_tflite:`
+    (plain truthiness), so it always runs regardless of whether the flag was
+    passed. Confirmed by direct observation (it ran and crashed on a missing
+    `onnx_tf` after we'd deliberately removed it). Since this is an editable local
+    clone, fixed directly: changed line 908 to `if args.convert_to_tflite is
+    True:`, matching the pattern used everywhere else in the file.
+15. **The exported `.onnx` uses external-data storage** — `torch.onnx.export`'s
+    modern path splits output into a small graph file (`<name>.onnx`, ~14KB here)
+    and a separate companion weights file (`<name>.onnx.data`). Copy **both** back
+    to Windows — `onnxruntime` fails opening the graph file alone with `External
+    data path does not exist`.
+
+**Confirmed after all of the above**: the dry-run `.onnx` (300 positive samples,
+1000 steps — deliberately tiny) loads via this repo's actual production
+`services/ears/wake.py` code path (not just the training-side openWakeWord, which
+has its own unrelated bugs on the git-main branch we cloned), accepts real
+microphone audio without crashing, and produces bounded, sane scores (0.0-0.043 on
+silence, a synthesized "hey cortana", and live mic "hey cortana" alike — flat and
+non-discriminating, consistent with the training run's own reported accuracy 0.5 /
+recall 0.0 for a model this undertrained, not a sign of a broken export). Pipeline
+mechanics confirmed end to end; model *quality* is what the full-scale run is for.
+
 ## Decisions to make before running this
 
 1. **Wake phrase exact wording** — **"hey cortana" is the primary phrase** for the
