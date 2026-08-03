@@ -14,9 +14,11 @@ and rationale — this file is the operating summary.
 > to be stale.
 
 **Done:** A0 — repo skeleton, uv project, `config/cortana.toml`, `scripts/bench.py`.
-Baseline on `gemma4:12b`: warm TTFT ~4.1-4.2s, ~55-58 tok/s, flat across 1K/8K/32K context
-(first run per depth is inflated by Ollama reloading on `num_ctx` change — ignore those).
-Saved to `logs/bench-2026-08-03.json`.
+Corrected baseline on `gemma4:12b` (thinking mode off, `keep_alive=30m`, warmup call per
+context depth to absorb the `num_ctx` reload cost): TTFT ~500-650ms, ~58-62 tok/s, flat
+across 1K/8K/32K context. Still ~1.5x over the 400ms LLM TTFT budget — worth revisiting in
+A5. Saved to `logs/bench-2026-08-03.json`. (Earlier run in this file's history was wrong —
+default thinking mode meant TTFT was measuring "hidden reasoning done," not first token.)
 **Next:** A1 — streaming LLM client (`services/brain/client.py`)
 
 ## Architecture

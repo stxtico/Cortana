@@ -20,6 +20,7 @@ DEFAULT_CONTEXT_SIZES = [1024, 8192, 32768]
 DEFAULT_RUNS = 3
 DEFAULT_MAX_OUTPUT_TOKENS = 200
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
+DEFAULT_KEEP_ALIVE = "30m"
 
 FILLER = (
     "The quick brown fox jumps over the lazy dog near the riverbank while "
@@ -44,11 +45,21 @@ def build_prompt(target_tokens: int) -> str:
     return text + "\n\nSummarize the above in one sentence."
 
 
-def run_once(client: httpx.Client, model: str, prompt: str, num_ctx: int, max_tokens: int) -> dict:
+def run_once(
+    client: httpx.Client,
+    model: str,
+    prompt: str,
+    num_ctx: int,
+    max_tokens: int,
+    think: bool,
+    keep_alive: str,
+) -> dict:
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": True,
+        "think": think,
+        "keep_alive": keep_alive,
         "options": {"num_ctx": num_ctx, "num_predict": max_tokens},
     }
     start = time.perf_counter()
@@ -60,7 +71,7 @@ def run_once(client: httpx.Client, model: str, prompt: str, num_ctx: int, max_to
             if not line:
                 continue
             chunk = json.loads(line)
-            if first_token_time is None and chunk.get("response"):
+            if first_token_time is None and (chunk.get("response") or chunk.get("thinking")):
                 first_token_time = time.perf_counter()
             if chunk.get("done"):
                 final = chunk
@@ -105,20 +116,27 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=DEFAULT_RUNS)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
     parser.add_argument("--url", default=DEFAULT_OLLAMA_URL)
+    parser.add_argument("--keep-alive", default=DEFAULT_KEEP_ALIVE, help="Ollama keep_alive duration, keeps the model resident between calls")
+    parser.add_argument("--think", action="store_true", help="Leave thinking mode on (off by default — voice loop doesn't want hidden reasoning latency)")
     args = parser.parse_args()
 
     model = args.model or load_primary_model()
 
-    print(f"Benchmarking `{model}` at {args.url}")
+    print(f"Benchmarking `{model}` at {args.url} (think={args.think}, keep_alive={args.keep_alive})")
     print(f"Context depths: {args.contexts} | runs each: {args.runs} | output cap: {args.max_tokens} tokens\n")
 
     results = []
     with httpx.Client(base_url=args.url) as client:
         for ctx in args.contexts:
             prompt = build_prompt(ctx)
+            # Changing num_ctx forces Ollama to reallocate the KV cache and reload the
+            # model — absorb that cost here so it doesn't skew the first timed run.
+            print(f"  context={ctx} warmup ...", end=" ", flush=True)
+            run_once(client, model, prompt, ctx, args.max_tokens, args.think, args.keep_alive)
+            print("done")
             for run_idx in range(1, args.runs + 1):
                 print(f"  context={ctx} run={run_idx}/{args.runs} ...", end=" ", flush=True)
-                metrics = run_once(client, model, prompt, ctx, args.max_tokens)
+                metrics = run_once(client, model, prompt, ctx, args.max_tokens, args.think, args.keep_alive)
                 print(f"TTFT={metrics['ttft_ms']}ms  {metrics['tokens_per_sec']} tok/s")
                 results.append({"context": ctx, "run": run_idx, **metrics})
 
@@ -126,7 +144,10 @@ def main() -> None:
 
     LOGS_DIR.mkdir(exist_ok=True)
     out_path = LOGS_DIR / f"bench-{date.today().isoformat()}.json"
-    out_path.write_text(json.dumps({"model": model, "url": args.url, "results": results}, indent=2))
+    out_path.write_text(json.dumps(
+        {"model": model, "url": args.url, "think": args.think, "keep_alive": args.keep_alive, "results": results},
+        indent=2,
+    ))
     print(f"\nWrote {out_path}")
 
 
