@@ -1,14 +1,20 @@
 """Wires wake -> VAD -> STT into one utterance stream. Owns the mic input.
 
-State machine: LISTENING (feed wake, one frame at a time) -> on detection ->
-RECORDING (feed VAD, accumulate audio until an endpoint) -> transcribe -> yield ->
-back to LISTENING.
+State machine: LISTENING (feed wake, one frame at a time, keep a rolling lookback
+buffer) -> on detection -> VERIFYING (if enabled: grab lookback + a short lookahead,
+run STT, require the wake phrase actually appears) -> RECORDING (feed VAD, accumulate
+audio until an endpoint) -> transcribe -> yield -> back to LISTENING.
+
+Verification exists because wake-word confidence score doesn't separate real
+detections from false accepts - calibration runs against background speech showed a
+false accept score above most genuine hits. Toggle via [audio.wake].verify.
 """
 
 import asyncio
 import json
 import time
 import tomllib
+from collections import deque
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,14 +47,22 @@ def _to_int16(frame: np.ndarray) -> np.ndarray:
 
 
 async def listen() -> AsyncIterator[str]:
-    """Yields one transcribed utterance each time the wake word fires and the
-    following speech reaches an endpoint. Runs until the caller stops iterating."""
+    """Yields one transcribed utterance each time the wake word fires, passes
+    verification (if enabled), and the following speech reaches an endpoint. Runs
+    until the caller stops iterating."""
     config = _load_config()
     sample_rate = config["sample_rate"]
     frame_size = config["frame_size"]
+    frame_duration_ms = frame_size / sample_rate * 1000
 
-    wake = WakeWordDetector(model_name=config["wake"]["model"], threshold=config["wake"]["threshold"])
-    debounce_s = config["wake"]["debounce_s"]
+    wake_cfg = config["wake"]
+    wake = WakeWordDetector(model_name=wake_cfg["model"], threshold=wake_cfg["threshold"])
+    debounce_s = wake_cfg["debounce_s"]
+    verify_enabled = wake_cfg["verify"]
+    verify_phrase = wake_cfg["verify_phrase"].lower()
+    lookback_frames_n = max(1, round(wake_cfg["verify_lookback_ms"] / frame_duration_ms))
+    lookahead_frames_n = max(1, round(wake_cfg["verify_lookahead_ms"] / frame_duration_ms))
+
     vad = EndpointDetector(
         threshold=config["vad"]["threshold"],
         sample_rate=sample_rate,
@@ -82,22 +96,45 @@ async def listen() -> AsyncIterator[str]:
     utterance_frames: list[np.ndarray] = []
     recording_start = 0.0
     last_wake_time = -debounce_s
+    lookback: deque[np.ndarray] = deque(maxlen=lookback_frames_n)
 
     with stream:
         while True:
             frame = await frame_queue.get()
 
             if state == "listening":
+                lookback.append(frame)
                 event = wake.process_frame(_to_int16(frame))
                 now = time.perf_counter()
                 if event is not None and (now - last_wake_time) > debounce_s:
                     last_wake_time = now
                     utterance_id += 1
                     _log({"stage": "wake", "utterance_id": utterance_id, "latency_ms": event.latency_ms, "score": event.score})
-                    state = "recording"
-                    utterance_frames = []
-                    vad.reset()
-                    recording_start = now
+
+                    if not verify_enabled:
+                        state = "recording"
+                        utterance_frames = []
+                        vad.reset()
+                        recording_start = now
+                        continue
+
+                    verify_start = time.perf_counter()
+                    lookahead = [await frame_queue.get() for _ in range(lookahead_frames_n)]
+                    verify_audio = np.concatenate(list(lookback) + lookahead)
+                    verify_transcript = stt.transcribe(verify_audio)
+                    verify_latency_ms = (time.perf_counter() - verify_start) * 1000
+                    passed = verify_phrase in verify_transcript.text.lower()
+                    _log({
+                        "stage": "verify", "utterance_id": utterance_id, "latency_ms": verify_latency_ms,
+                        "text": verify_transcript.text, "passed": passed,
+                    })
+
+                    if passed:
+                        state = "recording"
+                        utterance_frames = []
+                        vad.reset()
+                        recording_start = time.perf_counter()
+                    # else: discard, stay in listening, lookback keeps rolling
 
             elif state == "recording":
                 utterance_frames.append(frame)
@@ -116,6 +153,7 @@ async def listen() -> AsyncIterator[str]:
 
                     state = "listening"
                     utterance_frames = []
+                    lookback.clear()
 
 
 async def _main() -> None:

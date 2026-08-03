@@ -40,6 +40,30 @@ and rationale — this file is the operating summary.
   short utterances spuriously re-triggered the instant the state machine returned to
   listening — fixed with a `debounce_s` (2.0) in `[audio.wake]`. Live mic test still
   outstanding — do this before trusting the wake/VAD tuning.
+- Live mic calibration (`scripts/wake_calibration.py`, 2 runs, 23 detections each):
+  confidence score does NOT separate real wake detections from false accepts — a
+  clear false accept on background conversational audio scored 0.987, above most
+  genuine "hey jarvis" hits. Real vs false ranges overlap almost entirely (both
+  roughly 0.5-0.99). Also: saying the actual target phrase "hey cortana" triggered
+  the `hey_jarvis` stand-in too, suggesting it keys on "hey [name]" cadence more
+  than "jarvis" specifically. VAD endpoint was flat 322.0ms every time (zero
+  variance) = `min_silence_duration_ms(300) + speech_pad_ms(30)`, confirming it's
+  deterministic by config, not data-dependent.
+- Added a second-stage verification gate (`[audio.wake].verify` in `cortana.toml`,
+  default on): on any trigger, grab a lookback+lookahead buffer
+  (`verify_lookback_ms`/`verify_lookahead_ms`), run STT, require `verify_phrase`
+  ("jarvis") actually appears before entering RECORDING. Mirrored into
+  `wake_calibration.py` so the fix could be tested with real mic data, not just
+  assumed. Live re-test (smaller sample, quieter background than the two runs
+  above): 1 genuine detection passed ('Hey, Jarvis.'), 1 false accept correctly
+  rejected ('Hello.', no "jarvis"). Verify latency wasn't flat — 181ms for the
+  short reject, 1054ms for the longer pass (lookback+lookahead audio length
+  varies) — wider than the ~150-300ms estimate that motivated this.
+- Training plan for a real "hey cortana" model documented at
+  `services/ears/WAKE_TRAINING.md` (openWakeWord's synthetic-TTS + hard-negative +
+  RIR-augmentation approach) — not yet executed, just planned. Once a model exists,
+  `wake.py`'s `_resolve_model_path()` already treats a non-bundled `model` config
+  value as a direct path, so switching over should just be a config change.
 
 **Next:** A3 — Voice: streaming TTS (`services/voice/tts.py`)
 
