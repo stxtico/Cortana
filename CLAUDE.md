@@ -64,6 +64,12 @@ cortana/
    submits, or unlocks requires explicit confirmation. Never handle passwords.
 5. **Small commits.** Commit whenever something demonstrably works. Never batch.
 6. **Verify before declaring done.** Run it. For visual output, render and look at it.
+7. **One persistent HTTP client per process, explicit close.** Any service making repeated
+   calls (Ollama, Letta, APIs) opens its client once at the process/module level and reuses
+   it for the process lifetime, with an explicit `close()`/`aclose()`. A fresh client per
+   call costs real connection-setup latency — cost this out on `services/brain/client.py`:
+   ~280ms per call, a quarter of the first-token budget, from an `httpx.AsyncClient`
+   recreated on every `stream()` call instead of reused.
 
 ## Latency budget (Phase 1, enforced in code)
 
