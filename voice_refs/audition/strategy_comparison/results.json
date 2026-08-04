@@ -1,0 +1,105 @@
+[
+  {
+    "strategy": "per_sentence",
+    "ttfc_ms": 367.3,
+    "total_s": 13.76,
+    "audio_s": 12.7,
+    "n_chunks": 4,
+    "gaps_ms": [
+      818.5,
+      0.0,
+      0.0
+    ],
+    "max_gap_ms": 818.5,
+    "transcript": "Got it. Your meeting's at 3, and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the step file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\strategy_comparison\\per_sentence.wav"
+  },
+  {
+    "strategy": "whole_text",
+    "ttfc_ms": 5055.6,
+    "total_s": 17.65,
+    "audio_s": 12.58,
+    "n_chunks": 1,
+    "gaps_ms": [],
+    "max_gap_ms": null,
+    "transcript": "Got it. Your meeting's at 3, and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the step file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\strategy_comparison\\whole_text.wav"
+  },
+  {
+    "strategy": "hybrid",
+    "ttfc_ms": 318.9,
+    "total_s": 15.31,
+    "audio_s": 11.51,
+    "n_chunks": 2,
+    "gaps_ms": [
+      3616.1
+    ],
+    "max_gap_ms": 3616.1,
+    "transcript": "Got it. Your meeting's at 3, and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the step file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\strategy_comparison\\hybrid.wav"
+  },
+  {
+    "strategy": "hybrid3",
+    "ttfc_ms": 371.8,
+    "total_s": 15.27,
+    "audio_s": 12.06,
+    "n_chunks": 3,
+    "gaps_ms": [
+      2986.0,
+      0.0
+    ],
+    "max_gap_ms": 2986.0,
+    "transcript": "Got it. Your meeting's at 3, and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the step file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\strategy_comparison\\hybrid3.wav"
+  },
+  {
+    "strategy": "inference_stream",
+    "ttfc_ms": 1064.3,
+    "total_s": 13.29,
+    "audio_s": 12.21,
+    "n_chunks": 14,
+    "gaps_ms": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_gap_ms": 0.0,
+    "transcript": "Got it. Your meeting's at 3 and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the step file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\strategy_comparison\\inference_stream.wav"
+  },
+  {
+    "strategy": "buffered_stream",
+    "ttfc_ms": 614.9,
+    "total_s": 11.86,
+    "audio_s": 11.23,
+    "n_chunks": 14,
+    "gaps_ms": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_gap_ms": 0.0,
+    "transcript": "Got it. Your meeting's at 3, and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the step file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\strategy_comparison\\buffered_stream.wav"
+  }
+]

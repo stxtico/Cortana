@@ -78,16 +78,26 @@ language     = "en"
 [voice]
 engine        = "xtts"   # "kokoro" (fast dev baseline) or "xtts" (production, cloned voice — see PROMPTS.md A3 step 3)
 synth_workers = 1        # concurrent sentence-synthesis workers in speak_stream() - see tts.py
-# How speak_stream() groups tokens into synthesis calls - see tts.py's _CONSUMERS.
-#   per_sentence - each sentence its own call. Fastest first audio, but XTTS
-#                  conditions on isolated text, which measurably changes delivery
-#                  character (see CLAUDE.md's path-divergence investigation).
-#   whole_text   - the entire response as one call. Best delivery character, zero
-#                  streaming - no audio until generation finishes.
-#   hybrid       - sentence 1 alone (fast first audio), everything after as one call
-#                  once the stream ends. Still being measured against whole_text for
-#                  gap size before this becomes the default - see CLAUDE.md.
-strategy      = "per_sentence"
+# How speak_stream() groups tokens into synthesis calls - see tts.py's _CONSUMERS /
+# _STREAM_CONSUMERS. Six-way comparison on a realistic multi-sentence response
+# (TTFA / max mid-response gap / total time, CLAUDE.md has full numbers):
+#   per_sentence      - each sentence its own call. 367ms TTFA, but an 819ms gap and
+#                       XTTS conditions on isolated text, which measurably changes
+#                       delivery character (see CLAUDE.md's path-divergence investigation).
+#   whole_text        - the entire response as one call. Best delivery character, zero
+#                       streaming - no audio until generation finishes (5056ms TTFA).
+#   hybrid            - sentence 1 alone, everything after as one call. 319ms TTFA but
+#                       a 3616ms mid-response gap chunking alone can't close.
+#   hybrid3           - sentence 1, sentences 2-3, remainder. 372ms TTFA, 2986ms gap -
+#                       better than hybrid, still not closed.
+#   inference_stream  - whole response as one Xtts.inference_stream() call, played as
+#                       it generates. 0ms gaps, but 1064ms TTFA (waits for the full
+#                       token stream before starting synthesis).
+#   buffered_stream   - inference_stream fired as soon as sentence 2 completes (or
+#                       ~300 chars), remainder as a second inference_stream call.
+#                       615ms TTFA, 0ms gaps, fastest total time. Default as of the
+#                       listening verdict - both TTFA and gap-free, no tradeoff needed.
+strategy      = "buffered_stream"
 
 [voice.kokoro]
 lang_code = "a"        # 'a' = American English (misaki G2P language code)

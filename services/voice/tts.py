@@ -160,12 +160,15 @@ async def _consume_whole_text(token_iterator: AsyncIterator[str], chunk_queue: "
     """The entire response as one synthesis call - best delivery character (XTTS
     conditions on the complete text), but zero streaming: no audio until the full
     response has been generated. For comparison/short-response use, not the default
-    for anything long enough that time-to-first-audio matters."""
+    for anything long enough that time-to-first-audio matters. Split at _MAX_CHUNK_CHARS
+    via _split_into_capped_chunks on the way out - a long response fed as one call was
+    exactly the shape that reproducibly truncated past ~450 chars (see CLAUDE.md)."""
     buffer = ""
     async for token in token_iterator:
         buffer += token
     if buffer.strip():
-        await chunk_queue.put(buffer)
+        for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+            await chunk_queue.put(piece)
     await chunk_queue.put(None)
 
 
@@ -173,7 +176,10 @@ async def _consume_hybrid(token_iterator: AsyncIterator[str], chunk_queue: "asyn
     """Sentence 1 alone (fast time-to-first-audio, same as per_sentence), then
     everything after buffered until the stream ends and sent as one whole-text call
     (delivery character closer to whole_text for the remainder, which is most of the
-    response by word count in a typical multi-sentence reply)."""
+    response by word count in a typical multi-sentence reply). The remainder is
+    split at _MAX_CHUNK_CHARS via _split_into_capped_chunks - on a long response
+    that "everything after" call was exactly the shape that reproducibly truncated
+    past ~450 chars (see CLAUDE.md)."""
     buffer = ""
     first_sentence_sent = False
     async for token in token_iterator:
@@ -186,7 +192,8 @@ async def _consume_hybrid(token_iterator: AsyncIterator[str], chunk_queue: "asyn
                 if len(sentences) > 1:
                     buffer = "".join(sentences[1:]) + buffer
     if buffer.strip():
-        await chunk_queue.put(buffer)
+        for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+            await chunk_queue.put(piece)
     await chunk_queue.put(None)
 
 
@@ -198,7 +205,9 @@ async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asy
     ~0.8s playback covering only a fraction of the ~3.8-4s it took to synthesize the
     other three sentences as one call). Splitting off a second chunk gives synthesis
     an earlier midpoint to catch up at, at the cost of one more character-shift
-    boundary than hybrid."""
+    boundary than hybrid. Chunk 2 and the remainder are both split at
+    _MAX_CHUNK_CHARS via _split_into_capped_chunks - either can exceed it on a long
+    enough response, the same truncation risk as hybrid's remainder (see CLAUDE.md)."""
     buffer = ""
     collected: list[str] = []
     stage = 0  # 0: need 1 sentence for chunk 1, 1: need 2 more for chunk 2, 2: remainder only
@@ -213,7 +222,8 @@ async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asy
                     collected = []
                     stage = 1
                 elif stage == 1 and len(collected) == 2:
-                    await chunk_queue.put("".join(collected))
+                    for piece in _split_into_capped_chunks("".join(collected), _MAX_CHUNK_CHARS):
+                        await chunk_queue.put(piece)
                     collected = []
                     stage = 2
                     leftover = sentences[i + 1:]
@@ -221,7 +231,75 @@ async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asy
                         buffer = "".join(leftover) + buffer
                     break
     if buffer.strip():
-        await chunk_queue.put(buffer)
+        for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+            await chunk_queue.put(piece)
+    await chunk_queue.put(None)
+
+
+_BUFFERED_START_CHAR_THRESHOLD = 300  # fire the first inference_stream call once buffered
+# text reaches this many characters, even if sentence 2 hasn't completed yet - a safety net
+# against an unusually long sentence 1/2, not the normal trigger for realistic responses.
+_MAX_CHUNK_CHARS = 350  # hard per-call cap, used by every consumer that can combine multiple
+# sentences into one synthesis call (whole_text, hybrid's remainder, hybrid3's chunk 2/3,
+# buffered_stream). XTTS reproducibly truncated audio past ~450 characters in a single call
+# (4/4 runs, always cutting the last word) while 357 chars came through clean every time -
+# see CLAUDE.md. 350 keeps a margin under that boundary rather than riding right up against it.
+
+
+def _split_into_capped_chunks(text: str, max_chars: int) -> list[str]:
+    """Splits text into pieces of at most max_chars, preferring sentence boundaries
+    so the safety cap doesn't cut mid-sentence - unless a single sentence itself
+    exceeds max_chars, which gets hard-cut as a last resort rather than ever
+    exceeding the cap (better than risking XTTS's truncation failure mode)."""
+    sentences, remainder = _split_sentences(text)
+    if remainder.strip():
+        sentences = sentences + [remainder]
+    chunks: list[str] = []
+    current = ""
+    for sentence in sentences:
+        if len(sentence) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(sentence[i:i + max_chars] for i in range(0, len(sentence), max_chars))
+            continue
+        if len(current) + len(sentence) > max_chars:
+            chunks.append(current)
+            current = sentence
+        else:
+            current += sentence
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def _consume_buffered_start(token_iterator: AsyncIterator[str], chunk_queue: "asyncio.Queue[str | None]") -> None:
+    """First inference_stream call gets sentence 1 + sentence 2 (or ~300 chars,
+    whichever comes first) - meaningfully more whole-text-ish conditioning context
+    than hybrid's sentence-1-alone, without waiting for the full response the way
+    plain inference_stream (via _consume_whole_text) does. Remainder becomes a
+    second call once the stream ends. Both pieces run through
+    _split_into_capped_chunks so neither risks XTTS's long-input truncation."""
+    buffer = ""
+    first_chunk_sent = False
+    async for token in token_iterator:
+        buffer += token
+        if not first_chunk_sent:
+            sentences, remainder = _split_sentences(buffer)
+            if len(sentences) >= 2:
+                first_text = "".join(sentences[:2])
+                for piece in _split_into_capped_chunks(first_text, _MAX_CHUNK_CHARS):
+                    await chunk_queue.put(piece)
+                buffer = "".join(sentences[2:]) + remainder
+                first_chunk_sent = True
+            elif len(buffer) >= _BUFFERED_START_CHAR_THRESHOLD:
+                for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+                    await chunk_queue.put(piece)
+                buffer = ""
+                first_chunk_sent = True
+    if buffer.strip():
+        for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+            await chunk_queue.put(piece)
     await chunk_queue.put(None)
 
 
@@ -230,6 +308,11 @@ _CONSUMERS = {
     "whole_text": _consume_whole_text,
     "hybrid": _consume_hybrid,
     "hybrid3": _consume_hybrid3,
+}
+
+_STREAM_CONSUMERS = {
+    "inference_stream": _consume_whole_text,
+    "buffered_stream": _consume_buffered_start,
 }
 
 
@@ -269,11 +352,11 @@ async def speak_stream(
         synth_workers = config.get("synth_workers", 1)
     if strategy is None:
         strategy = config.get("strategy", "per_sentence")
-    if strategy != "inference_stream" and strategy not in _CONSUMERS:
+    if strategy not in _CONSUMERS and strategy not in _STREAM_CONSUMERS:
         raise ValueError(
-            f"Unknown [voice].strategy: {strategy!r} - expected one of {[*_CONSUMERS, 'inference_stream']}"
+            f"Unknown [voice].strategy: {strategy!r} - expected one of {[*_CONSUMERS, *_STREAM_CONSUMERS]}"
         )
-    if strategy == "inference_stream" and type(engine).synthesize_stream is TTSEngine.synthesize_stream:
+    if strategy in _STREAM_CONSUMERS and type(engine).synthesize_stream is TTSEngine.synthesize_stream:
         # Engine doesn't override synthesize_stream (e.g. Kokoro) - fall back rather
         # than ever triggering its NotImplementedError in practice.
         strategy = "per_sentence"
@@ -410,8 +493,9 @@ async def speak_stream(
             await asyncio.to_thread(stream.stop)
             stream.close()
 
-    if strategy == "inference_stream":
-        await asyncio.gather(_consume_whole_text(token_iterator, chunk_queue), _stream_synthesize(), _play_all())
+    if strategy in _STREAM_CONSUMERS:
+        consume = _STREAM_CONSUMERS[strategy]
+        await asyncio.gather(consume(token_iterator, chunk_queue), _stream_synthesize(), _play_all())
     else:
         consume = _CONSUMERS[strategy]
         await asyncio.gather(consume(token_iterator, chunk_queue), _synthesize_all(), _play_all())

@@ -348,30 +348,75 @@ A8's tool-calling demands first, see Done below)
   `asyncio.to_thread`-wrapped cancellation only stops *awaiting* the blocking call -
   the underlying thread (and the audio hardware) keeps running unless something
   actually halts the stream. `play_audio()` now calls `sd.stop()` and `_play_all()`
-  now calls `stream.abort()` on `CancelledError`, re-raising after. **Not yet
-  verified end to end** - the last test run of the day was interrupted mid-command
-  (user stopped work for the day, not a failure) right after the `OutputStream`
-  rewrite landed, so the full pipeline hasn't been re-run since. Code compiles and
-  the Kokoro-fallback path was verified; the real XTTS path through the *new*
-  `_play_all()` has not been.
+  now calls `stream.abort()` on `CancelledError`, re-raising after.
+  **Both verified end-to-end this session** (see below), not just written.
+
+- OutputStream + barge-in verification, and the two findings that blocked the
+  strategy comparison. `_play_all()`'s persistent `sd.OutputStream` verified with a
+  real `speak_stream(strategy="inference_stream")` run: no clicks/dropouts, 13 real
+  chunks, per-chunk write overhead averaged **-13.3ms** (oscillating -20.6 to
+  +11.5ms, no positive-spike/underrun signature) - better than the ~10-22ms
+  standalone estimate, not just consistent with it. Barge-in verified on all four
+  criteria (start a stream, cancel 3s in, confirm stop/no-orphan/no-leak/still-usable):
+  `CancelledError` propagated cleanly, zero orphaned threads after a 1s grace period,
+  no leaked exception, a fresh `synthesize()` call afterward worked normally.
+  Two real findings surfaced along the way, both required resolving before the
+  strategy comparison could mean anything: (1) `inference_stream` (via
+  `_consume_whole_text`) measured **999ms-1064ms TTFC**, not the fast-first-audio
+  win it was supposed to be - because it waits for the *entire* token stream to
+  finish before firing the one `inference_stream()` call, same blocking wait as
+  `whole_text`. (2) Barge-in testing surfaced XTTS's 250-char `char_limits["en"]`
+  warning in the logs; checked what it actually does - source-read confirms
+  `check_input_length()` only logs, the real hard stop is a 402-GPT-token `assert`.
+  Measured directly with real audio + transcription (not duration ratios alone,
+  which looked inconclusive at 91-113% of baseline - see rule 6): text at 357 chars
+  synthesized clean every time, 457 chars **truncated 4/4 runs** (always dropping
+  the last word). Also confirmed via source (`gpt.py`) that XTTS has no
+  incremental/append-mid-generation text feeding mechanism - `store_prefix_emb` sets
+  a fixed prefix embedding once from the initial input, so "start on sentence 1 and
+  append more as it arrives" isn't possible; the only real lever was *when* the one
+  call fires and *how much* text it's given.
+- `buffered_stream`: sixth `[voice].strategy`, the fix for both findings above at
+  once. Fires the first `inference_stream()` call once sentence 2 completes (or
+  ~300 chars, whichever first) instead of waiting for the full response - meaningfully
+  more conditioning context than `hybrid`'s sentence-1-alone, without
+  `inference_stream`'s full-wait cost. Remainder fires as a second call. Both calls
+  routed through a new `_split_into_capped_chunks()` helper at a 350-char hard cap
+  (`_MAX_CHUNK_CHARS`) - a safety margin under the 457-char truncation boundary just
+  confirmed. `speak_stream()`'s dispatch generalized from a single
+  `strategy == "inference_stream"` check to a `_STREAM_CONSUMERS` dict (both
+  `inference_stream` and `buffered_stream` need `_stream_synthesize()`, not
+  `_synthesize_all()` - `_stream_synthesize()` already looped over multiple
+  sequential chunk_queue items correctly, no change needed there).
+  Extended the same 350-char cap to the three non-streaming strategies that lacked
+  it: `whole_text` (the entire response, unbounded before this), `hybrid`'s
+  remainder call, and `hybrid3`'s chunk-2 and remainder calls - all were silently at
+  risk of the same truncation on a long enough response, not just `buffered_stream`.
+  Verified directly: a 702-char synthetic response now splits into capped
+  sub-350-char pieces on all four (`whole_text`/`hybrid`/`hybrid3`/`buffered_stream`),
+  none exceeding the cap.
+  **Six-way comparison** run on the same realistic 207-char multi-sentence response,
+  real word-paced tokens at ~80wps (matching `e4b`'s real generation speed - the
+  first run used a mistaken 4wps human-speech pace and produced nonsense numbers,
+  caught before trusting them and rerun). TTFA / max mid-response gap / total time:
+  `per_sentence` 367ms / 819ms / 13.76s, `whole_text` 5056ms / n/a (1 chunk) / 17.65s,
+  `hybrid` 319ms / 3616ms / 15.31s, `hybrid3` 372ms / 2986ms / 15.27s,
+  `inference_stream` 1064ms / 0ms / 13.29s, `buffered_stream` **615ms / 0ms / 11.86s**.
+  All six transcripts came back complete (no truncation) with only expected STT
+  artifacts (digit-vs-word "three"/"3", "STEP"→"step" casing). Audio saved to
+  `voice_refs/audition/strategy_comparison/` (`scripts/compare_strategies.py`).
+  **Listening verdict: `buffered_stream` set as `[voice].strategy`'s default** -
+  matches `inference_stream`'s zero mid-response gaps while cutting TTFA nearly in
+  half (1064ms -> 615ms), and came out fastest overall on total time; `hybrid3`
+  sounded equally good but its ~3s gap is exactly what `buffered_stream` eliminates.
+  New rule added (CLAUDE.md rule 6): any future TTS verification includes a
+  transcript check, not just duration - duration ratios alone missed the truncation
+  above; only transcribing the audio caught it.
 
 **Next**, in order:
-1. **Verify the `OutputStream` rewrite end-to-end** - a live run was interrupted
-   before this happened (see immediately above). Do this first; everything below
-   assumes the persistent-stream playback actually works.
-2. **Barge-in verification** - `synthesize_stream()`'s `stop_event` thread-cancel
-   path and `_play_all()`'s `stream.abort()` path are both written but not yet
-   exercised by an actual cancellation test (start a stream, cancel mid-playback,
-   confirm prompt stop, no orphaned thread, no leaked exception, engine still usable
-   after).
-3. **Five-strategy comparison** - `per_sentence`/`whole_text`/`hybrid`/`hybrid3`/
-   `inference_stream` on the same realistic multi-sentence response, TTFA + gaps +
-   total time, all in one place. `inference_stream`'s raw numbers above are
-   promising but were measured standalone, not through this comparison. Make it the
-   default if it holds up, per the user.
-4. **Live end-to-end backchannel test** - needs a real voice, same constraint as the
+1. **Live end-to-end backchannel test** - needs a real voice, same constraint as the
    VAD pause test. Nobody has actually talked to the backchannel system yet.
-5. **Listening verdicts still pending**:
+2. **Listening verdicts still pending**:
    - The *original* temperature/speed param sweep on `calm_14` (`voice_refs/
      audition/param_sweep/`) - superseded in spirit by the later `units_only`-text
      sweep, but never explicitly closed out.
@@ -419,6 +464,13 @@ cortana/
    submits, or unlocks requires explicit confirmation. Never handle passwords.
 5. **Small commits.** Commit whenever something demonstrably works. Never batch.
 6. **Verify before declaring done.** Run it. For visual output, render and look at it.
+   For audio/TTS output, transcribe it and check the text, not just duration or a
+   duration-ratio proxy — the char-limit truncation investigation (see A3 Step 3 below)
+   found a real, consistent truncation (XTTS dropping the last word past ~450 chars)
+   that duration ratios alone (91-113% of baseline) did not clearly reveal; only
+   transcribing the actual audio surfaced it. Any future TTS change (new strategy,
+   engine, param change) gets a transcript check as part of verification, not just a
+   listen-and-duration check.
 7. **One persistent client/model instance per process, explicit close.** Any service
    making repeated calls (Ollama, TTS models, APIs) opens its client/model once at
    process/module level and reuses it for the process lifetime, with an explicit
