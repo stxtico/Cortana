@@ -7,8 +7,9 @@ and rationale — this file is the operating summary.
 
 **Phase:** 1 — Voice loop
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
-**Model:** Gemma 4 12B Unified (Q4, ~7.5GB, multimodal — covers vision too), Ollama tag
-`gemma4:12b`
+**Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
+`gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
+A8's tool-calling demands first, see Done below)
 
 > Update this block every session. It's the first thing to read and the thing most likely
 > to be stale.
@@ -309,9 +310,79 @@ and rationale — this file is the operating summary.
   (`per_sentence` default retained, not switched to `hybrid`/`hybrid3` yet) is
   still the user's call - numbers reported, not decided here.
 
-**Next:** Strategy decision (per_sentence/hybrid/hybrid3/whole_text - all four
-working and measured, tradeoffs above), then a live end-to-end test of backchannel
-prompting (needs a real voice - same constraint as the VAD pause test), then A4.
+- inference_stream: a 5th `[voice].strategy`, built after hybrid/hybrid3 couldn't
+  close the mid-response gap (previous bullet). `Xtts.inference_stream()` conditions
+  on the *entire* text in one sequence (confirmed by reading the source: `text =
+  [text]` when not splitting) while yielding audio progressively as GPT tokens
+  generate - whole-text delivery character and streaming output from the same call,
+  which chunking could only ever trade off against each other. Checked DeepSpeed
+  first (`use_deepspeed=True`) as the other lever: blocked, not just slow - it needs
+  the full CUDA Toolkit (`CUDA_HOME`, `nvcc`) to compile its ops, and this machine
+  only has runtime libraries. A multi-GB SDK install is out of scope to do
+  unilaterally; noting it as available if VRAM/build tooling changes later.
+  `inference_stream()` is a synchronous generator (blocks per chunk while the GPU
+  works), bridged into the async pipeline via a thread + `asyncio.Queue` -
+  `call_soon_threadsafe`, same pattern `services/ears/pipeline.py` already uses for
+  sounddevice's mic callback. Added `TTSEngine.synthesize_stream()` to the interface
+  (default raises `NotImplementedError`; `KokoroEngine` inherits that, `XTTSEngine`
+  overrides it) - `speak_stream()` checks `type(engine).synthesize_stream is
+  TTSEngine.synthesize_stream` and falls back to `per_sentence` rather than ever
+  triggering the raise for real.
+  Raw characteristics measured before playback integration: time to first chunk
+  331-714ms (same ballpark as isolated-sentence-1 TTFA), generation-to-playback
+  ratio 0.41-0.49x (audio generates roughly twice as fast as it plays), every chunk
+  across both test runs arrived before cumulative playback would have needed it,
+  margin growing throughout the response (-0.17s at chunk 0 to -5.7s by chunk 12) -
+  in principle zero mid-response gaps, unlike hybrid/hybrid3.
+  While testing actual playback, found a separate real problem, universal across
+  *all* strategies, not just this one: `play_audio()`'s `sd.play()`+`sd.wait()` per
+  chunk costs ~60-80ms of stream setup/teardown overhead on top of the audio's own
+  duration - real dead air at every chunk boundary that the existing `gap_ms` metric
+  couldn't see (it only measures whether the next chunk was *ready* in time, not
+  whether the hardware stream stayed continuous). Fixed by switching `_play_all()`
+  to one persistent `sd.OutputStream` per response (`.write()` per chunk) instead of
+  a new stream per chunk - measured overhead directly: ~67-79ms/chunk before, ~10-22ms
+  after. `play_audio()` itself is unchanged, still used for one-off single-clip
+  playback (backchannel lines don't need a persistent stream).
+  Barge-in implication of the OutputStream switch, fixed alongside it:
+  `asyncio.to_thread`-wrapped cancellation only stops *awaiting* the blocking call -
+  the underlying thread (and the audio hardware) keeps running unless something
+  actually halts the stream. `play_audio()` now calls `sd.stop()` and `_play_all()`
+  now calls `stream.abort()` on `CancelledError`, re-raising after. **Not yet
+  verified end to end** - the last test run of the day was interrupted mid-command
+  (user stopped work for the day, not a failure) right after the `OutputStream`
+  rewrite landed, so the full pipeline hasn't been re-run since. Code compiles and
+  the Kokoro-fallback path was verified; the real XTTS path through the *new*
+  `_play_all()` has not been.
+
+**Next**, in order:
+1. **Verify the `OutputStream` rewrite end-to-end** - a live run was interrupted
+   before this happened (see immediately above). Do this first; everything below
+   assumes the persistent-stream playback actually works.
+2. **Barge-in verification** - `synthesize_stream()`'s `stop_event` thread-cancel
+   path and `_play_all()`'s `stream.abort()` path are both written but not yet
+   exercised by an actual cancellation test (start a stream, cancel mid-playback,
+   confirm prompt stop, no orphaned thread, no leaked exception, engine still usable
+   after).
+3. **Five-strategy comparison** - `per_sentence`/`whole_text`/`hybrid`/`hybrid3`/
+   `inference_stream` on the same realistic multi-sentence response, TTFA + gaps +
+   total time, all in one place. `inference_stream`'s raw numbers above are
+   promising but were measured standalone, not through this comparison. Make it the
+   default if it holds up, per the user.
+4. **Live end-to-end backchannel test** - needs a real voice, same constraint as the
+   VAD pause test. Nobody has actually talked to the backchannel system yet.
+5. **Listening verdicts still pending**:
+   - The *original* temperature/speed param sweep on `calm_14` (`voice_refs/
+     audition/param_sweep/`) - superseded in spirit by the later `units_only`-text
+     sweep, but never explicitly closed out.
+   - Backchannel/soft-moment reference choice between `calm_14` and the new clip's
+     `full`/`soft` variant - **note**: `full`/`soft` is one of the two references
+     (along with `calmest_a`) that showed real short-text rambling risk (1/15 trials
+     in the systematic test), unlike `calm_14` (0/15). The retry-based mitigation in
+     `backchannel_pool.py` covers this regardless of which reference ends up
+     assigned to backchannel duty, but it's worth knowing `soft` isn't as clean on
+     short text specifically if it ever gets used for quick reactive lines.
+   Then A4 (wire ears -> brain -> voice) once the above settle.
 
 ## Architecture
 
