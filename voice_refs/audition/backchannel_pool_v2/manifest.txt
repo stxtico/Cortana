@@ -1,0 +1,7 @@
+01 'Right.' (dry peak=0.746, 1.39s)
+02 'Yeah.' (dry peak=0.604, 1.29s)
+03 'Okay.' (dry peak=0.699, 1.34s)
+04 'Got it.' (dry peak=0.702, 0.79s)
+05 'Sure.' (dry peak=0.636, 0.87s)
+06 'I see.' (dry peak=0.601, 1.76s)
+07 'Oh?.' (dry peak=0.446, 1.66s)

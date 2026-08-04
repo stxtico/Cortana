@@ -1,0 +1,6 @@
+response_at_master.wav: -48.2dB (normal response at output_gain_db=-30.0)
+volume_db_0.wav: volume_db=0 -> total -50.8dB (master -30.0 + backchannel 0)
+volume_db_-2.wav: volume_db=-2 -> total -52.8dB (master -30.0 + backchannel -2)
+volume_db_-4.wav: volume_db=-4 -> total -54.8dB (master -30.0 + backchannel -4)
+volume_db_-6.wav: volume_db=-6 -> total -56.8dB (master -30.0 + backchannel -6)
+volume_db_-8.wav: volume_db=-8 -> total -58.8dB (master -30.0 + backchannel -8)

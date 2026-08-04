@@ -1,0 +1,4 @@
+dry_0db.wav: -17.3dB (no master gain, for reference)
+neg10db.wav: -27.3dB
+neg20db.wav: -37.3dB
+neg30db.wav: -47.3dB

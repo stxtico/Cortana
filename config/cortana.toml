@@ -68,6 +68,23 @@ escalation_factor = 3.0     # cooldown multiplier per consecutive unanswered pro
 max_cooldown_s    = 300.0   # cap on escalated cooldown
 pool_min_size     = 5       # regenerate when the pool drops to this size
 pool_target_size  = 10
+# Listening verdict on the first pool: too loud, and the reference/pace read as
+# clipped/businesslike rather than someone actually listening. Three per-context
+# overrides on the shared XTTS engine (services/ears/backchannel_pool.py), applied
+# only to backchannel synthesis - real responses stay on [voice.xtts]'s calm/1.0.
+reference  = "soft"   # named reference from [voice.xtts.references] - softer/more human
+                       # than "calm". The retry mitigation in backchannel_pool.py already
+                       # covers soft's measured short-text rambling risk.
+speed      = 0.88     # slower reads as warm; the 1.0 default read as clipped for 1-2 word lines.
+# Stacks additively in dB with [voice].output_gain_db (both are plain multiplicative
+# gains applied in sequence - see tts.py's _output_gain()) - re-check this whenever
+# that changes, they're not independent. -8 was calibrated against a 0dB master; at
+# output_gain_db=-20 that measured 10.6dB under a normal response (voice_refs/
+# audition/backchannel_vs_master/, see CLAUDE.md) - too buried. A backchannel's dry
+# level is already ~2.6dB under a response's from being short/soft-referenced/slow,
+# before any volume_db attenuation at all - -2 lands it about 4.6dB under: audible
+# separation without disappearing.
+volume_db  = -2.0     # backchannels sit under the conversation, not competing with it.
 
 [audio.stt]
 model        = "large-v3-turbo"
@@ -98,6 +115,26 @@ synth_workers = 1        # concurrent sentence-synthesis workers in speak_stream
 #                       615ms TTFA, 0ms gaps, fastest total time. Default as of the
 #                       listening verdict - both TTFA and gap-free, no tradeoff needed.
 strategy      = "buffered_stream"
+# Master output level - one place covering every playback path (play_audio(),
+# _play_all() - backchannels and real responses alike), applied in tts.py after
+# the level ramp below, not before (the ramp reasons about relative levels
+# between utterances; this is a final absolute-level multiply on top of that,
+# with no feedback into ramp state - see _output_gain()'s docstring). Stacks
+# additively in dB with [audio.backchannel].volume_db - re-check that value
+# whenever this changes, they're not independent (see its comment above).
+output_gain_db = -20.0
+
+[voice.level_ramp]
+# Volume continuity across utterances (tts.py's _ramp_gain/_record_played_level) -
+# without this, every utterance synthesizes at a fixed level with no memory of the
+# last one, so a soft backchannel could be immediately followed by a full-volume
+# response. Real conversation doesn't jump like that - after speaking quietly, the
+# next thing is usually also quiet, then it drifts back up over a couple of turns.
+# Only ever attenuates toward continuity, never boosts an utterance louder than its
+# natural level.
+enabled  = true
+window_s = 6.0   # only cap volume if the next utterance starts within this long of the last one actually played
+step_db  = 6.0   # max loudness increase per utterance while ramping - recovers to natural level over a few utterances, not instantly
 
 [voice.kokoro]
 lang_code = "a"        # 'a' = American English (misaki G2P language code)

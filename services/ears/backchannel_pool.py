@@ -1,6 +1,9 @@
-"""Pre-rendered backchannel line pool - short phrases ("and?", "go on", "you were
-saying?") played instead of the real response when the user's utterance sounds
-abandoned rather than finished (services/ears/completeness.py). Pre-rendering is
+"""Pre-rendered backchannel line pool - short real words ("right", "yeah", "got it")
+played instead of the real response when the user's utterance sounds abandoned
+rather than finished (services/ears/completeness.py). Non-lexical sounds ("mm",
+"hmm") were tried and dropped - see _GENERATION_PROMPT and CLAUDE.md's listening
+verdict: XTTS has no real pronunciation for them, so they came out as long, strange
+vocalizations (1.9-2.2s for two letters) instead of a quick, clean word. Pre-rendering is
 non-negotiable: generating live at the moment a backchannel is needed would already
 have missed its moment - a prompt arriving 800ms after someone trails off doesn't
 read as a backchannel anymore. Same pattern PROMPTS.md's A17 camera-cover reactions
@@ -49,23 +52,28 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 PERSONA_PATH = ROOT / "config" / "persona.md"
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
 
-_GENERATION_PROMPT = """You are generating short backchannel phrases for {name}, a voice \
-assistant, to say when the person she's talking to trails off mid-thought. A backchannel \
-is a verbal nudge to keep going - not a real response, not a question about what they \
-were going to say.
+_GENERATION_PROMPT = """You are generating short backchannel words for {name}, a voice \
+assistant, to say while the person she's talking to trails off mid-thought - the verbal \
+equivalent of a nod. It signals "I'm still here, still listening" - it does not instruct \
+them to continue and does not ask them anything.
 
 Rules:
-- Each line must be 1-4 words. Genuinely short - these get spoken while someone is \
-  still gathering their thought.
-- Natural, low-key, encouraging continuation - not needy, not repetitive of each other.
-- Never guess or complete their thought. Never ask a real question.
-- Examples of the right length and tone: "And?", "Go on.", "Mm-hmm?", "Take your time.", \
-  "You were saying?", "Yeah?"
+- Real words only, always spelled as actual dictionary words: "Right.", "Yeah.", "Oh?", \
+  "Got it.", "Sure.", "Okay.", "I see."
+- Never a non-lexical sound or interjection spelled out phonetically - no "Mm", "Mhm", \
+  "Hm", "Hmm", "Mm-hmm", or similar. XTTS has no real pronunciation for these; they come \
+  out as a strange, unnaturally long vocalization instead of a quick, clean word.
+- 1-2 words, almost always - genuinely short, spoken while someone is still gathering \
+  their thought.
+- Never a directive ("Go on.", "Continue.", "Take your time.") and never a question about \
+  what they were going to say ("You were saying?", "What were you saying?") - those \
+  instruct or interrupt. A real listener just says a small word and waits.
+- Natural, low-key, not needy, not repetitive of each other.
 
 Persona for voice/tone:
 {persona}
 
-Generate {n} distinct backchannel lines, one per line, nothing else - no numbering, \
+Generate {n} distinct backchannel words, one per line, nothing else - no numbering, \
 no quotes, no extra commentary."""
 
 
@@ -92,7 +100,7 @@ _MIN_MAX_DURATION_S = 2.5
 _SYNTHESIZE_RETRIES = 3
 
 
-async def _synthesize_with_retry(engine, text: str) -> np.ndarray:
+async def _synthesize_with_retry(engine, text: str, **inference_overrides) -> np.ndarray:
     """Retries on an anomalously long result - see module docstring for why this is
     the real mitigation (temperature isn't). Returns whatever the last attempt
     produced if every retry still looks like a runaway, rather than blocking
@@ -100,10 +108,19 @@ async def _synthesize_with_retry(engine, text: str) -> np.ndarray:
     max_duration_s = max(_MIN_MAX_DURATION_S, len(text) * _MAX_DURATION_S_PER_CHAR)
     audio = np.zeros(0, dtype=np.float32)
     for _ in range(_SYNTHESIZE_RETRIES):
-        audio = await asyncio.to_thread(engine.synthesize, text)
+        audio = await asyncio.to_thread(engine.synthesize, text, **inference_overrides)
         if len(audio) / engine.sample_rate <= max_duration_s:
             return audio
     return audio
+
+
+def _apply_gain_db(audio: np.ndarray, db: float) -> np.ndarray:
+    """Backchannels sit under the conversation, not competing with it - see
+    module docstring / CLAUDE.md listening verdict. Applied once at pool-fill
+    time (baked into the stored audio) rather than at playback, since every
+    backchannel line only ever plays through play_audio() with no other gain
+    stage in between."""
+    return audio * (10 ** (db / 20))
 
 
 @dataclass
@@ -115,9 +132,13 @@ class PoolEntry:
 
 
 class BackchannelPool:
-    def __init__(self, min_size: int = 5, target_size: int = 10):
+    def __init__(self, min_size: int = 5, target_size: int = 10,
+                 reference: str | None = "soft", speed: float = 0.88, volume_db: float = -8.0):
         self.min_size = min_size
         self.target_size = target_size
+        self.reference = reference
+        self.speed = speed
+        self.volume_db = volume_db
         self._pool: list[PoolEntry] = []
         self._used_texts: set[str] = set()
 
@@ -140,28 +161,46 @@ class BackchannelPool:
     async def ensure_filled(self) -> int:
         """Tops the pool up to target_size if it's at or below min_size. Returns how
         many lines were added. No-op (and cheap to call speculatively) if already
-        above min_size."""
+        above min_size.
+
+        Backchannels use a different reference (self.reference, "soft" by default -
+        softer/more human than "calm", the real-response default) and a slower
+        speed - both per-context overrides on the one shared engine instance (rule
+        7), not a second engine. The reference switch is restored on the way out so
+        a real response synthesized right after a pool refill still gets "calm".
+        Known gap: this isn't locked against a concurrent real synthesize() call
+        mid-refill on the shared engine - low-probability given how quick a refill
+        is relative to how often it fires, not addressed here since production
+        wiring is a separate step."""
         if len(self._pool) > self.min_size:
             return 0
         needed = self.target_size - len(self._pool)
         candidates = await _generate_lines(needed + 3)  # a few extra to survive dedup filtering
 
         engine, _ = voice_tts._get_engine()
-        added = 0
-        for text in candidates:
-            if added >= needed:
-                break
-            clean = voice_tts.sanitize(text)
-            if not clean or clean in self._used_texts or any(e.text == clean for e in self._pool):
-                continue
-            audio = await _synthesize_with_retry(engine, clean)
-            if audio.size == 0:
-                continue
-            self._pool.append(PoolEntry(
-                id=str(uuid.uuid4()), text=clean, audio=audio, sample_rate=engine.sample_rate,
-            ))
-            added += 1
-        return added
+        prior_reference = engine.active_reference
+        if self.reference and self.reference != prior_reference:
+            engine.use_reference(self.reference)
+        try:
+            added = 0
+            for text in candidates:
+                if added >= needed:
+                    break
+                clean = voice_tts.sanitize(text)
+                if not clean or clean in self._used_texts or any(e.text == clean for e in self._pool):
+                    continue
+                audio = await _synthesize_with_retry(engine, clean, speed=self.speed)
+                if audio.size == 0:
+                    continue
+                self._pool.append(PoolEntry(
+                    id=str(uuid.uuid4()), text=clean,
+                    audio=_apply_gain_db(audio, self.volume_db), sample_rate=engine.sample_rate,
+                ))
+                added += 1
+            return added
+        finally:
+            if prior_reference and prior_reference != engine.active_reference:
+                engine.use_reference(prior_reference)
 
 
 _pool: BackchannelPool | None = None
@@ -178,5 +217,8 @@ def get_pool() -> BackchannelPool:
         _pool = BackchannelPool(
             min_size=bc_cfg.get("pool_min_size", 5),
             target_size=bc_cfg.get("pool_target_size", 10),
+            reference=bc_cfg.get("reference", "soft"),
+            speed=bc_cfg.get("speed", 0.88),
+            volume_db=bc_cfg.get("volume_db", -8.0),
         )
     return _pool

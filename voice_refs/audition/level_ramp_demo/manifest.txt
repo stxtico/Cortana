@@ -1,0 +1,4 @@
+00_backchannel.wav: 'Right.' (-28.6dB)
+01_response_turn1.wav: "Yeah, that's the one - go ahead and use it." (-22.4dB)
+02_response_turn2.wav: 'The export finished a few minutes ago, looks clean.' (-19.8dB)
+03_response_turn3.wav: 'No errors in the log, so you should be good to go.' (-18.6dB)

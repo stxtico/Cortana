@@ -99,12 +99,18 @@ def _get_engine() -> tuple[TTSEngine, str]:
     return _engine, _engine_name
 
 
+_last_played_rms: float | None = None
+_last_played_time: float | None = None
+
+
 def close() -> None:
-    global _engine, _engine_name
+    global _engine, _engine_name, _last_played_rms, _last_played_time
     if _engine is not None:
         _engine.close()
     _engine = None
     _engine_name = None
+    _last_played_rms = None
+    _last_played_time = None
 
 
 def _log(record: dict) -> None:
@@ -113,9 +119,61 @@ def _log(record: dict) -> None:
         f.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **record}) + "\n")
 
 
+def _rms(audio: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+
+
+def _ramp_gain(natural_rms: float, config: dict) -> float:
+    """Caps how much louder this utterance can be than the last one actually
+    played, if it follows within [voice.level_ramp].window_s - real conversation
+    doesn't jump straight from a quiet backchannel to a full-volume response, it
+    drifts back up over a couple of turns (CLAUDE.md's volume-continuity finding).
+    Only ever attenuates toward continuity, never boosts - an utterance that's
+    already quieter than the cap plays at its natural level unchanged."""
+    ramp_cfg = config.get("level_ramp", {})
+    if not ramp_cfg.get("enabled", True) or natural_rms <= 0:
+        return 1.0
+    if _last_played_rms is None or _last_played_time is None:
+        return 1.0
+    window_s = ramp_cfg.get("window_s", 6.0)
+    if time.perf_counter() - _last_played_time > window_s:
+        return 1.0
+    step_db = ramp_cfg.get("step_db", 6.0)
+    cap_rms = _last_played_rms * (10 ** (step_db / 20))
+    if natural_rms <= cap_rms:
+        return 1.0
+    return cap_rms / natural_rms
+
+
+def _record_played_level(rms: float) -> None:
+    global _last_played_rms, _last_played_time
+    if rms <= 0:
+        return
+    _last_played_rms = rms
+    _last_played_time = time.perf_counter()
+
+
+def _output_gain(config: dict) -> float:
+    """Master output level - [voice].output_gain_db, one place covering every
+    playback path (play_audio, _play_all - backchannels and real responses
+    alike), not a per-strategy or per-caller setting. Applied after the ramp
+    gain, not before: the ramp reasons about relative levels between utterances,
+    and _record_played_level() tracks that pre-master-gain level so ramp
+    comparisons stay in their own frame regardless of what the master is set to -
+    this is purely a final multiply on top, with no feedback into ramp state."""
+    db = config.get("output_gain_db", 0.0)
+    return 10 ** (db / 20) if db != 0.0 else 1.0
+
+
 async def play_audio(audio: np.ndarray, sample_rate: int) -> None:
+    config = _load_config()
+    ramp_gain = _ramp_gain(_rms(audio), config)
+    ramped = audio * ramp_gain if ramp_gain != 1.0 else audio
+    output_gain = _output_gain(config)
+    played = ramped * output_gain if output_gain != 1.0 else ramped
+
     def _blocking() -> None:
-        sd.play(audio, sample_rate)
+        sd.play(played, sample_rate)
         sd.wait()
     try:
         await asyncio.to_thread(_blocking)
@@ -126,6 +184,7 @@ async def play_audio(audio: np.ndarray, sample_rate: int) -> None:
         # Needed for barge-in: killing this task alone doesn't kill the sound.
         sd.stop()
         raise
+    _record_played_level(_rms(ramped))
 
 
 def _split_sentences(buffer: str) -> tuple[list[str], str]:
@@ -462,6 +521,11 @@ async def speak_stream(
         # still right for one-off single-clip playback (backchannel lines).
         first_chunk = True
         last_playback_end: float | None = None
+        ramp_gain = 1.0
+        output_gain = _output_gain(config)  # constant for the whole call - a fixed
+        # [voice].output_gain_db setting, not something that varies chunk to chunk.
+        sum_sq = 0.0
+        total_samples = 0
         stream = sd.OutputStream(samplerate=engine.sample_rate, channels=1, dtype="float32")
         stream.start()
         try:
@@ -475,20 +539,32 @@ async def speak_stream(
                 if first_chunk:
                     ttfc_ms = (time.perf_counter() - stream_start) * 1000
                     _log({"stage": "ttfc", "engine": engine_name, "ttfc_ms": round(ttfc_ms, 1)})
+                    # Computed once from the first chunk and held for the whole
+                    # utterance - recomputing per chunk would make the level pump
+                    # up/down mid-response instead of ramping smoothly turn to turn.
+                    ramp_gain = _ramp_gain(_rms(audio), config)
                     first_chunk = False
+                ramped = audio * ramp_gain if ramp_gain != 1.0 else audio
+                sum_sq += float(np.sum(np.square(ramped)))
+                total_samples += len(ramped)
+                played = ramped * output_gain if output_gain != 1.0 else ramped
                 _log({
                     "stage": "sentence", "engine": engine_name, **meta,
                     "audio_s": round(len(audio) / engine.sample_rate, 3),
                     "gap_ms": round(gap_ms, 1) if gap_ms is not None else None,
+                    "ramp_gain_db": round(20 * np.log10(ramp_gain), 1) if ramp_gain != 1.0 else None,
+                    "output_gain_db": config.get("output_gain_db", 0.0) if output_gain != 1.0 else None,
                 })
                 try:
-                    await asyncio.to_thread(stream.write, audio)
+                    await asyncio.to_thread(stream.write, played)
                 except asyncio.CancelledError:
                     # Barge-in: abort() drops whatever's still buffered immediately,
                     # unlike stop() which finishes playing it out first.
                     stream.abort()
                     raise
                 last_playback_end = time.perf_counter()
+            if total_samples > 0:
+                _record_played_level((sum_sq / total_samples) ** 0.5)
         finally:
             await asyncio.to_thread(stream.stop)
             stream.close()
