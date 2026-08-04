@@ -195,6 +195,16 @@ radio_in_band_threshold = 0.75   # flag as likely comms/radio-filtered if >= thi
                                   # heuristic - re-check this gap if a new source behaves
                                   # differently.
 
+[brain.barge_in]
+# services/brain/loop.py's on_wake hook fires on every wake trigger, including the
+# one that starts a brand new turn - not just genuine interruptions. Gate: only
+# cancel the in-flight response task if it has actually been playing audio (per
+# services/voice/tts.py's response_playback_elapsed_s()) for at least this long.
+# Guards against killing a response that hasn't produced any audio yet (still
+# mid-LLM-stream or mid-synthesis) - there's nothing to barge in on yet, so
+# cancelling there only destroys work for no perceptible benefit.
+min_playback_s = 0.3
+
 [latency]
 
 [memory]

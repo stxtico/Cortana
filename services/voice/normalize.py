@@ -7,8 +7,21 @@ it.
 
 Order matters: times first (so "2:15" isn't eaten by the bare-number regexes before
 it's recognized as a time), then number+unit combos, then bare decimals, then bare
-integers last (a bare-integer regex would match the digits inside an untouched
-decimal if it ran first).
+integers, then acronyms last (disjoint from the digit regexes above, so order
+against them doesn't matter, but keeping the pass order stable avoids re-reasoning
+about it later).
+
+Acronyms: XTTS reads an unspaced all-caps run as if it were a mispronounced regular
+word, not letters - "PLA" came out as "player.a", "STL" dropped letters entirely.
+Verified by transcribing (rule 6, CLAUDE.md), not just listening: spacing the
+letters with periods ("P. L. A.") reliably transcribed back to the clean acronym,
+while bare spaces between letters ("P L A") still garbled ("PLAware"). A small
+exception list (_WORD_ACRONYMS) covers the ones actually pronounced as a single
+word - confirmed "NASA" transcribes correctly read as a word. PETG looked like it
+might belong on that list too but tested badly wrong both alone ("Try PETG
+instead." -> "Try PG instead.") and next to PLA in one sentence (-> "Pele prints
+easier than peachy.") - it's letter-spelled like everything else not on the list,
+not an exception.
 """
 
 import re
@@ -34,6 +47,18 @@ _DECIMAL_RE = re.compile(r'\b\d+\.\d+\b')
 # before integers, so no raw decimals remain by the time this runs) - this guard is
 # for robustness if that order ever changes, not a fix for a live bug in normalize().
 _INT_RE = re.compile(r'(?<!\d\.)\b\d+\b(?!\.\d)')
+
+# All-caps 2-5 letter tokens are assumed to be initialisms (spelled letter by
+# letter) unless listed here as ones actually pronounced as a single word - see
+# module docstring for how this list was validated (transcribed, not just
+# listened to). Deliberately short and specific rather than a dictionary lookup -
+# add to it only after testing a specific acronym the same way, not by guessing.
+_WORD_ACRONYMS = {"NASA", "OK"}
+# Doesn't match a caps run immediately followed by a lowercase letter (a plural
+# like "PLAs" or "STLs") - \b requires a transition, and "A"->"s" isn't one. Known
+# gap, not handled: rare enough in practice that it wasn't worth the extra
+# complexity here.
+_ACRONYM_RE = re.compile(r'\b[A-Z]{2,5}\b')
 
 
 def _spell_number(text: str) -> str:
@@ -66,9 +91,27 @@ def _spell_unit(match: re.Match) -> str:
     return f"{number_words} {unit}{plural}"
 
 
+def _spell_acronym(match: re.Match) -> str:
+    word = match.group(0)
+    if word in _WORD_ACRONYMS:
+        return word
+    spelled = ". ".join(word)
+    # A trailing period after the last letter is what makes it transcribe clean
+    # (bare "P L A" with no periods at all still garbled - see module docstring),
+    # but if the acronym is already followed by punctuation ("PLA." at a sentence
+    # end, "PLA," mid-list) adding one anyway doubles up ("P. L. A.."). Peek at
+    # the source text via match.string/match.end() - re.sub's replacement
+    # function only gets the Match, not surrounding context, otherwise.
+    next_char = match.string[match.end():match.end() + 1]
+    if next_char in ".!?,;:":
+        return spelled
+    return spelled + "."
+
+
 def normalize(text: str) -> str:
     text = _TIME_RE.sub(_spell_time, text)
     text = _UNIT_RE.sub(_spell_unit, text)
     text = _DECIMAL_RE.sub(lambda m: _spell_number(m.group(0)), text)
     text = _INT_RE.sub(lambda m: num2words(int(m.group(0))), text)
+    text = _ACRONYM_RE.sub(_spell_acronym, text)
     return text

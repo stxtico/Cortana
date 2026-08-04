@@ -102,6 +102,39 @@ def _get_engine() -> tuple[TTSEngine, str]:
 _last_played_rms: float | None = None
 _last_played_time: float | None = None
 
+# Whether a _respond() task's speak_stream() is actively playing audio right now,
+# and when that playback started - services/brain/loop.py's barge-in hook reads
+# this to decide whether a wake trigger is interrupting a real, audible response
+# or just landing during silence (still waiting on the LLM/first synthesis, or
+# nothing in flight at all). Only ever reflects _play_all() (real responses),
+# not play_audio() (backchannel one-offs) - backchannels aren't behind a
+# cancellable response_task, so there's nothing for barge-in to reason about there.
+_response_playback_active = False
+_response_playback_started_at: float | None = None
+
+
+def _mark_playback_started() -> None:
+    global _response_playback_active, _response_playback_started_at
+    _response_playback_active = True
+    _response_playback_started_at = time.perf_counter()
+
+
+def _mark_playback_stopped() -> None:
+    global _response_playback_active, _response_playback_started_at
+    _response_playback_active = False
+    _response_playback_started_at = None
+
+
+def response_playback_elapsed_s() -> float | None:
+    """Seconds since the current response's audio actually started playing, or
+    None if nothing is playing right now. Deliberately measured from first audio
+    out (ttfc), not from when the response task was created - a task that's still
+    waiting on the LLM or on synthesis hasn't played anything yet, so there's
+    nothing for a wake trigger to be interrupting."""
+    if not _response_playback_active or _response_playback_started_at is None:
+        return None
+    return time.perf_counter() - _response_playback_started_at
+
 
 def close() -> None:
     global _engine, _engine_name, _last_played_rms, _last_played_time
@@ -111,6 +144,7 @@ def close() -> None:
     _engine_name = None
     _last_played_rms = None
     _last_played_time = None
+    _mark_playback_stopped()
 
 
 def _log(record: dict) -> None:
@@ -165,25 +199,47 @@ def _output_gain(config: dict) -> float:
     return 10 ** (db / 20) if db != 0.0 else 1.0
 
 
+_PLAYBACK_SUBBLOCK_S = 0.1  # ~100ms - keeps any single blocking stream.write() call
+# short, regardless of how long the audio chunk being played actually is. Found
+# empirically (not theoretical): stream.abort() does not reliably preempt an
+# in-flight OutputStream.write() call - cancelling mid-write on a large chunk
+# (e.g. buffered_stream's first ~sentence-1+2 call) could leave the worker thread
+# genuinely stuck inside PortAudio's write(), which later crashed the process
+# (access violation) when asyncio's executor tried to join that orphaned thread at
+# interpreter shutdown. Writing in ~100ms sub-blocks bounds the worst case to about
+# that long regardless of whether abort() actually works, and gives asyncio a real
+# cancellation checkpoint between sub-blocks instead of one for the whole chunk.
+
+
+async def _write_interruptible(stream: sd.OutputStream, audio: np.ndarray, sample_rate: int) -> None:
+    subblock_samples = max(1, int(sample_rate * _PLAYBACK_SUBBLOCK_S))
+    for start in range(0, len(audio), subblock_samples):
+        await asyncio.to_thread(stream.write, audio[start:start + subblock_samples])
+
+
 async def play_audio(audio: np.ndarray, sample_rate: int) -> None:
+    """One-off single-clip playback (backchannel lines). Uses the same
+    OutputStream + _write_interruptible() primitive as _play_all() - originally
+    this used sd.play()+sd.wait()+sd.stop(), but that has the identical hang risk
+    _write_interruptible was built for: reproduced directly, sd.stop() did not
+    reliably interrupt a blocking sd.wait() either, and the process crashed the
+    same way at shutdown. One safe playback primitive, not two."""
     config = _load_config()
     ramp_gain = _ramp_gain(_rms(audio), config)
     ramped = audio * ramp_gain if ramp_gain != 1.0 else audio
     output_gain = _output_gain(config)
     played = ramped * output_gain if output_gain != 1.0 else ramped
 
-    def _blocking() -> None:
-        sd.play(played, sample_rate)
-        sd.wait()
+    stream = sd.OutputStream(samplerate=sample_rate, channels=1, dtype="float32")
+    stream.start()
     try:
-        await asyncio.to_thread(_blocking)
+        await _write_interruptible(stream, played, sample_rate)
     except asyncio.CancelledError:
-        # asyncio.to_thread cancellation only stops *awaiting* the thread - the
-        # underlying sd.wait() call keeps blocking in the background until the
-        # audio naturally finishes unless sd.stop() actually halts the stream.
-        # Needed for barge-in: killing this task alone doesn't kill the sound.
-        sd.stop()
+        stream.abort()
         raise
+    finally:
+        await asyncio.to_thread(stream.stop)
+        stream.close()
     _record_played_level(_rms(ramped))
 
 
@@ -220,13 +276,13 @@ async def _consume_whole_text(token_iterator: AsyncIterator[str], chunk_queue: "
     conditions on the complete text), but zero streaming: no audio until the full
     response has been generated. For comparison/short-response use, not the default
     for anything long enough that time-to-first-audio matters. Split at _MAX_CHUNK_CHARS
-    via _split_into_capped_chunks on the way out - a long response fed as one call was
+    via _normalized_capped_chunks on the way out - a long response fed as one call was
     exactly the shape that reproducibly truncated past ~450 chars (see CLAUDE.md)."""
     buffer = ""
     async for token in token_iterator:
         buffer += token
     if buffer.strip():
-        for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+        for piece in _normalized_capped_chunks(buffer, _MAX_CHUNK_CHARS):
             await chunk_queue.put(piece)
     await chunk_queue.put(None)
 
@@ -236,7 +292,7 @@ async def _consume_hybrid(token_iterator: AsyncIterator[str], chunk_queue: "asyn
     everything after buffered until the stream ends and sent as one whole-text call
     (delivery character closer to whole_text for the remainder, which is most of the
     response by word count in a typical multi-sentence reply). The remainder is
-    split at _MAX_CHUNK_CHARS via _split_into_capped_chunks - on a long response
+    split at _MAX_CHUNK_CHARS via _normalized_capped_chunks - on a long response
     that "everything after" call was exactly the shape that reproducibly truncated
     past ~450 chars (see CLAUDE.md)."""
     buffer = ""
@@ -246,12 +302,13 @@ async def _consume_hybrid(token_iterator: AsyncIterator[str], chunk_queue: "asyn
         if not first_sentence_sent:
             sentences, buffer = _split_sentences(buffer)
             if sentences:
-                await chunk_queue.put(sentences[0])
+                for piece in _normalized_capped_chunks(sentences[0], _MAX_CHUNK_CHARS):
+                    await chunk_queue.put(piece)
                 first_sentence_sent = True
                 if len(sentences) > 1:
                     buffer = "".join(sentences[1:]) + buffer
     if buffer.strip():
-        for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+        for piece in _normalized_capped_chunks(buffer, _MAX_CHUNK_CHARS):
             await chunk_queue.put(piece)
     await chunk_queue.put(None)
 
@@ -265,7 +322,7 @@ async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asy
     other three sentences as one call). Splitting off a second chunk gives synthesis
     an earlier midpoint to catch up at, at the cost of one more character-shift
     boundary than hybrid. Chunk 2 and the remainder are both split at
-    _MAX_CHUNK_CHARS via _split_into_capped_chunks - either can exceed it on a long
+    _MAX_CHUNK_CHARS via _normalized_capped_chunks - either can exceed it on a long
     enough response, the same truncation risk as hybrid's remainder (see CLAUDE.md)."""
     buffer = ""
     collected: list[str] = []
@@ -277,11 +334,12 @@ async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asy
             for i, sentence in enumerate(sentences):
                 collected.append(sentence)
                 if stage == 0 and len(collected) == 1:
-                    await chunk_queue.put(collected[0])
+                    for piece in _normalized_capped_chunks(collected[0], _MAX_CHUNK_CHARS):
+                        await chunk_queue.put(piece)
                     collected = []
                     stage = 1
                 elif stage == 1 and len(collected) == 2:
-                    for piece in _split_into_capped_chunks("".join(collected), _MAX_CHUNK_CHARS):
+                    for piece in _normalized_capped_chunks("".join(collected), _MAX_CHUNK_CHARS):
                         await chunk_queue.put(piece)
                     collected = []
                     stage = 2
@@ -290,7 +348,7 @@ async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asy
                         buffer = "".join(leftover) + buffer
                     break
     if buffer.strip():
-        for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+        for piece in _normalized_capped_chunks(buffer, _MAX_CHUNK_CHARS):
             await chunk_queue.put(piece)
     await chunk_queue.put(None)
 
@@ -332,13 +390,32 @@ def _split_into_capped_chunks(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
+def _normalized_capped_chunks(text: str, max_chars: int) -> list[str]:
+    """sanitize() + normalize() BEFORE capping, not after. normalize() expands text
+    - "1.2mm" becomes "one point two millimeters", 5 chars to 30 - so capping the
+    raw streamed text first and normalizing each already-capped piece afterward (as
+    _stream_synthesize()/_synthesize_all() do per-chunk, for chunks that arrive
+    already clean from here) let a normalized chunk balloon back past max_chars and
+    XTTS's ~402-token hard limit. That's what produced the "text length exceeds...
+    250" warnings and the audio cutouts/distortion in the live A4 test - every
+    _split_into_capped_chunks() call site upstream (whole_text, hybrid's remainder,
+    hybrid3's chunk 2/3, buffered_stream's first chunk and remainder) had this bug,
+    not just one strategy. _stream_synthesize()/_synthesize_all() still call
+    sanitize()/normalize() on what they dequeue - harmless no-ops on text that's
+    already clean, but still needed for _consume_per_sentence, whose chunks reach
+    the queue raw."""
+    clean = normalize(sanitize(text)) if text.strip() else ""
+    return _split_into_capped_chunks(clean, max_chars) if clean else []
+
+
 async def _consume_buffered_start(token_iterator: AsyncIterator[str], chunk_queue: "asyncio.Queue[str | None]") -> None:
     """First inference_stream call gets sentence 1 + sentence 2 (or ~300 chars,
     whichever comes first) - meaningfully more whole-text-ish conditioning context
     than hybrid's sentence-1-alone, without waiting for the full response the way
     plain inference_stream (via _consume_whole_text) does. Remainder becomes a
     second call once the stream ends. Both pieces run through
-    _split_into_capped_chunks so neither risks XTTS's long-input truncation."""
+    _normalized_capped_chunks (sanitize+normalize, THEN cap - see its docstring for
+    why the order matters) so neither risks XTTS's long-input truncation."""
     buffer = ""
     first_chunk_sent = False
     async for token in token_iterator:
@@ -347,17 +424,17 @@ async def _consume_buffered_start(token_iterator: AsyncIterator[str], chunk_queu
             sentences, remainder = _split_sentences(buffer)
             if len(sentences) >= 2:
                 first_text = "".join(sentences[:2])
-                for piece in _split_into_capped_chunks(first_text, _MAX_CHUNK_CHARS):
+                for piece in _normalized_capped_chunks(first_text, _MAX_CHUNK_CHARS):
                     await chunk_queue.put(piece)
                 buffer = "".join(sentences[2:]) + remainder
                 first_chunk_sent = True
             elif len(buffer) >= _BUFFERED_START_CHAR_THRESHOLD:
-                for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+                for piece in _normalized_capped_chunks(buffer, _MAX_CHUNK_CHARS):
                     await chunk_queue.put(piece)
                 buffer = ""
                 first_chunk_sent = True
     if buffer.strip():
-        for piece in _split_into_capped_chunks(buffer, _MAX_CHUNK_CHARS):
+        for piece in _normalized_capped_chunks(buffer, _MAX_CHUNK_CHARS):
             await chunk_queue.put(piece)
     await chunk_queue.put(None)
 
@@ -544,6 +621,7 @@ async def speak_stream(
                     # up/down mid-response instead of ramping smoothly turn to turn.
                     ramp_gain = _ramp_gain(_rms(audio), config)
                     first_chunk = False
+                    _mark_playback_started()
                 ramped = audio * ramp_gain if ramp_gain != 1.0 else audio
                 sum_sq += float(np.sum(np.square(ramped)))
                 total_samples += len(ramped)
@@ -556,16 +634,19 @@ async def speak_stream(
                     "output_gain_db": config.get("output_gain_db", 0.0) if output_gain != 1.0 else None,
                 })
                 try:
-                    await asyncio.to_thread(stream.write, played)
+                    await _write_interruptible(stream, played, engine.sample_rate)
                 except asyncio.CancelledError:
                     # Barge-in: abort() drops whatever's still buffered immediately,
-                    # unlike stop() which finishes playing it out first.
+                    # unlike stop() which finishes playing it out first. Best-effort
+                    # on top of _write_interruptible's sub-blocking, which is what
+                    # actually bounds how long this can take to land.
                     stream.abort()
                     raise
                 last_playback_end = time.perf_counter()
             if total_samples > 0:
                 _record_played_level((sum_sq / total_samples) ** 0.5)
         finally:
+            _mark_playback_stopped()
             await asyncio.to_thread(stream.stop)
             stream.close()
 

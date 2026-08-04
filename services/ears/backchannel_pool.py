@@ -37,10 +37,13 @@ fail every time) so a fresh attempt usually avoids it.
 """
 
 import asyncio
+import json
 import random
+import re
 import tomllib
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -51,6 +54,29 @@ from services.voice import tts as voice_tts
 ROOT = Path(__file__).resolve().parent.parent.parent
 PERSONA_PATH = ROOT / "config" / "persona.md"
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
+POOL_LOG_PATH = ROOT / "logs" / "backchannel_pool.jsonl"
+
+# Backchannels are always 1-4 words of plain English (see _GENERATION_PROMPT) - a
+# quick, cheap gate before anything reaches the tokenizer/GPU. Printable ASCII only
+# (no emoji, no smart quotes/em dashes the LLM sometimes emits, no stray control
+# chars) and a generous length ceiling well above anything a real backchannel line
+# should ever be. This doesn't claim to be *the* fix for the srcIndex CUDA assert
+# (deliberate emoji/non-ASCII/empty probes against XTTS directly didn't reproduce it -
+# see xtts_engine.py's module docstring) - it's a cheap first filter for exactly the
+# kind of input the live crash was suspected to involve, on top of, not instead of,
+# _validate_text_tokens()'s real structural check in xtts_engine.py.
+_SAFE_TEXT_RE = re.compile(r'^[\x20-\x7E]+$')
+_MAX_TEXT_CHARS = 60
+
+
+def _log(record: dict) -> None:
+    POOL_LOG_PATH.parent.mkdir(exist_ok=True)
+    with POOL_LOG_PATH.open("a") as f:
+        f.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **record}) + "\n")
+
+
+def _is_safe_text(text: str) -> bool:
+    return bool(text) and len(text) <= _MAX_TEXT_CHARS and bool(_SAFE_TEXT_RE.match(text))
 
 _GENERATION_PROMPT = """You are generating short backchannel words for {name}, a voice \
 assistant, to say while the person she's talking to trails off mid-thought - the verbal \
@@ -104,11 +130,23 @@ async def _synthesize_with_retry(engine, text: str, **inference_overrides) -> np
     """Retries on an anomalously long result - see module docstring for why this is
     the real mitigation (temperature isn't). Returns whatever the last attempt
     produced if every retry still looks like a runaway, rather than blocking
-    indefinitely or silently dropping the line."""
+    indefinitely or silently dropping the line.
+
+    Logs the exact text before every attempt - the live A4 crash (a CUDA device-side
+    assert during pool synthesis) left no record of which candidate line triggered
+    it, only that a call was in progress somewhere in the pool fill. A fatal CUDA
+    error (xtts_engine.py's _CudaContextPoisoned, or the underlying fatal RuntimeError
+    if it reaches here first) is not retried - the context is already corrupted, so a
+    second/third attempt can only add more confusing failures on top, not recover."""
     max_duration_s = max(_MIN_MAX_DURATION_S, len(text) * _MAX_DURATION_S_PER_CHAR)
     audio = np.zeros(0, dtype=np.float32)
-    for _ in range(_SYNTHESIZE_RETRIES):
-        audio = await asyncio.to_thread(engine.synthesize, text, **inference_overrides)
+    for attempt in range(_SYNTHESIZE_RETRIES):
+        _log({"stage": "synthesize_attempt", "text": text, "attempt": attempt + 1})
+        try:
+            audio = await asyncio.to_thread(engine.synthesize, text, **inference_overrides)
+        except Exception as exc:
+            _log({"stage": "synthesize_error", "text": text, "attempt": attempt + 1, "error": repr(exc)})
+            raise
         if len(audio) / engine.sample_rate <= max_duration_s:
             return audio
     return audio
@@ -168,10 +206,15 @@ class BackchannelPool:
         speed - both per-context overrides on the one shared engine instance (rule
         7), not a second engine. The reference switch is restored on the way out so
         a real response synthesized right after a pool refill still gets "calm".
-        Known gap: this isn't locked against a concurrent real synthesize() call
-        mid-refill on the shared engine - low-probability given how quick a refill
-        is relative to how often it fires, not addressed here since production
-        wiring is a separate step."""
+        This used to be an open gap ("not locked against a concurrent real
+        synthesize() call mid-refill") assumed low-probability - it wasn't:
+        concurrent access here was confirmed live to corrupt shared GPT decode
+        state and crash the CUDA context (see xtts_engine.py's module docstring).
+        engine._model_lock now serializes every call that touches the model, so a
+        concurrent real synthesize() either runs fully before or fully after this
+        refill, never interleaved with it - the use_reference() calls below go
+        through asyncio.to_thread specifically so waiting on that lock doesn't
+        block the event loop for however long the other call takes."""
         if len(self._pool) > self.min_size:
             return 0
         needed = self.target_size - len(self._pool)
@@ -180,7 +223,14 @@ class BackchannelPool:
         engine, _ = voice_tts._get_engine()
         prior_reference = engine.active_reference
         if self.reference and self.reference != prior_reference:
-            engine.use_reference(self.reference)
+            # to_thread, not a direct call: use_reference() now holds engine._model_lock
+            # for its duration (xtts_engine.py - the fix for a real concurrent-access
+            # crash between this refill and a real response's synthesize() call), and
+            # that lock can be held by a concurrent synthesize() call for as long as a
+            # full response takes to generate. Calling it directly here would block
+            # this coroutine's thread - which, for ensure_filled(), is the event loop
+            # itself - for that whole duration.
+            await asyncio.to_thread(engine.use_reference, self.reference)
         try:
             added = 0
             for text in candidates:
@@ -188,6 +238,13 @@ class BackchannelPool:
                     break
                 clean = voice_tts.sanitize(text)
                 if not clean or clean in self._used_texts or any(e.text == clean for e in self._pool):
+                    continue
+                if not _is_safe_text(clean):
+                    # LLM-generated - not guaranteed plain ASCII (emoji, smart
+                    # punctuation, stray unicode have all been observed). Reject
+                    # before it ever reaches the tokenizer/GPU rather than trust
+                    # xtts_engine.py's _validate_text_tokens() as the only backstop.
+                    _log({"stage": "reject_unsafe_text", "text": clean})
                     continue
                 audio = await _synthesize_with_retry(engine, clean, speed=self.speed)
                 if audio.size == 0:
@@ -200,7 +257,7 @@ class BackchannelPool:
             return added
         finally:
             if prior_reference and prior_reference != engine.active_reference:
-                engine.use_reference(prior_reference)
+                await asyncio.to_thread(engine.use_reference, prior_reference)
 
 
 _pool: BackchannelPool | None = None

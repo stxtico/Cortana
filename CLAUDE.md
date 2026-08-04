@@ -486,9 +486,164 @@ A8's tool-calling demands first, see Done below)
   reference choice is resolved by `soft` now being in real production use for
   backchannels specifically (fix 2 above) - no further decision needed on either.
 
-**Next**: A4 (wire ears -> brain -> voice). No listening verdicts or verification
-items outstanding as of this session - the backchannel system (quality, volume,
-live end-to-end) and the TTS strategy work are both closed out.
+- **A4 — closed the loop.** `services/brain/loop.py`: wake -> transcribe ->
+  completeness check -> stream to LLM -> stream to TTS, running continuously as
+  one conversation (`run()`), history tracked as a plain list, `config/persona.md`
+  loaded verbatim as the system prompt. Barge-in wired through
+  `pipeline.listen()`'s new `on_wake` callback (fires the instant a debounced wake
+  event is detected, before verify/recording even start - the earliest signal
+  available). First live pass found two real bugs, both from a naive first cut,
+  neither hypothetical:
+  1. `on_wake` cancelled the in-flight response task on *every* wake trigger,
+     including the wake that starts the very next turn - silently killing a
+     response that hadn't played any audio yet (still mid-LLM-stream). Fixed by
+     gating cancellation on `tts.py`'s new `response_playback_elapsed_s()` (tracks
+     when `_play_all()`'s first real chunk actually started playing) - only
+     cancels if audio has been playing at least `[brain.barge_in].min_playback_s`
+     (0.3s). Every decision (cancelled or skipped, and why) now logs to
+     `logs/loop.jsonl`.
+  2. A response task that dies (exception or silent hang) was only ever surfaced
+     if something later `await`ed it - miss that window and asyncio just logs
+     "exception was never retrieved" at GC time, easy to miss entirely. This is
+     exactly how a turn could burn 24s and leave nothing in `brain.jsonl`.
+     `response_task.add_done_callback(_on_response_task_done)` now logs every
+     completion (ok/cancelled/error) unconditionally the instant it happens, and
+     prints on error - can't fail silently again.
+  `tts.py`'s `_write_interruptible()`: `sd.OutputStream.write()`/`sd.wait()` don't
+  reliably preempt on `stream.abort()`/`sd.stop()` - reproduced a hung write
+  thread surviving cancellation, joined at interpreter shutdown by asyncio's
+  executor, crashing the process (access violation). Both `play_audio()` and
+  `_play_all()` now write in ~100ms sub-blocks so `stream.abort()` has a real
+  cancellation checkpoint instead of one for the whole chunk.
+  With bugs 1-2 fixed, live testing surfaced a `srcIndex < srcSelectDimSize`
+  device-side CUDA assert in GPT-2's embedding lookup during backchannel pool
+  synthesis - two rounds of investigation, first one wrong:
+  - Round 1 (text tokens): confirmed the tokenizer's vocab and the GPT's
+    text-embedding table are consistent on this checkpoint (6681 both) -
+    deliberate emoji/non-ASCII/empty-string probes against XTTS directly didn't
+    reproduce it either. Built `_validate_text_tokens()` anyway (mirrors XTTS's
+    own strip/lower/encode path, rejects any id outside the embedding table
+    *before* the GPU sees it) since it's real defense-in-depth, plus
+    `_CudaContextPoisoned` (a device-side assert corrupts the whole CUDA context,
+    not just the one call - confirmed live, the cleanup `use_reference()` right
+    after cascaded into further unrelated-looking errors - so every call after a
+    fatal CUDA error now fails fast with one clear message instead of limping
+    into more of those).
+  - Round 2 (the real cause, found after the crash recurred with round 1's guards
+    passing clean): not a length overflow either - 50 sequential real
+    `synthesize()` calls on short backchannel-shaped text, including several
+    genuine rambling outputs up to 5s long, never pushed the mel position index
+    above 100 of the table's 608. Two threads calling `synthesize()` concurrently
+    on the *same* engine instance reproduced a corrupted, negative
+    (`-100`) mel position index on the first attempt - `GPT2InferenceModel.
+    forward()`'s single-token decode step computes position from
+    `self.cached_prefix_emb.shape[1]`, shared mutable state a concurrent
+    `set_reference()`/`store_prefix_emb()` call can clobber mid-flight. This was
+    exactly the "not locked against a concurrent real synthesize() call
+    mid-refill" gap `backchannel_pool.py` had already flagged and assumed
+    low-probability - it wasn't, and it's specifically why the crash showed up in
+    backchannel synthesis (the pool refill is the one most likely to be running
+    in the background when a real response's synthesis lands). Fix:
+    `XTTSEngine._model_lock` (`threading.RLock`, not `asyncio.Lock` -
+    `synthesize()` runs on `asyncio.to_thread` workers) now serializes every call
+    touching shared model state (`synthesize`/`synthesize_stream`/
+    `set_reference`/`use_reference`), across all three real call sites (per-
+    sentence workers, the streaming path, backchannel pool).
+    `backchannel_pool.py`'s `use_reference()` calls now go through
+    `asyncio.to_thread` so waiting on that lock never blocks the event loop.
+    Re-verified with the fix: the 2-thread repro now survives clean (30/30), and
+    a harder 3-thread stress test firing all three real entry points at once (75
+    calls total) also came back clean. Diagnosed both rounds by patching
+    `torch.nn.functional.embedding` to bounds-check every lookup on the CPU side
+    before it reaches the GPU - catches the same failure as a plain Python
+    exception instead of a fatal assert, safe to iterate on without crashing the
+    process each time.
+  `onnxruntime` checked separately (CPU-only, `onnxruntime-gpu` not installed) -
+  confirmed intentional-by-measurement, not another rule-8 silent misconfig: wake
+  word detect measures 1.9ms median / 3.0ms max against a 50ms budget, 16-25x
+  under target already, so there's nothing to gain from GPU here.
+  Two more fixes landed after a further live pass ("four turns, no crash, clean
+  Ctrl+C exit," then a follow-up conversation that hit real content issues):
+  - **Chunk-cap-vs-normalize ordering.** `_split_into_capped_chunks()` was being
+    called on *raw* streamed text, with `sanitize()`/`normalize()` applied to
+    each already-capped piece afterward - but `normalize()` expands text ("1.2mm"
+    -> "one point two millimeters", 5 chars to 30), so a raw chunk safely under
+    the 350-char cap could balloon past XTTS's ~402-token hard limit after
+    normalization. This was systemic, not one strategy - every
+    `_split_into_capped_chunks()` call site (`whole_text`, `hybrid`'s remainder,
+    `hybrid3`'s chunk 2/3, `buffered_stream`'s first chunk and remainder) had it.
+    Fixed with `_normalized_capped_chunks()`: sanitize + normalize *then* cap,
+    swapped in at every call site. Reproduced the exact failure numerically (a
+    235-char raw chunk expanded to 429 post-normalization) and confirmed the fix,
+    then verified end-to-end with real synthesis + transcription (rule 6): the
+    resulting 263-char chunk transcribed complete.
+    Re-investigated after a follow-up report that the warning fired again on a
+    live FDM answer: extensive testing (real end-to-end `speak_stream()` runs
+    against 4 different real LLM-generated FDM responses, plus a deliberate
+    531-char no-punctuation run-on stress test) found **zero cap violations** -
+    every chunk landed at or under 350 chars every time. The 250-char *warning*
+    XTTS logs is a separate, lower, advisory threshold that's expected to fire on
+    any chunk between 250-350 chars by design (350 was chosen with margin under
+    the real ~450-char truncation boundary, not under XTTS's own more
+    conservative 250-char log message) - seeing the warning alone was never
+    evidence of a violation, confirmed again here. While testing this, found a
+    real, separate, measurable anomaly worth a closer look in A5 or later:
+    synthesizing the same FDM-topic content at graduated lengths (99/172/245/
+    319/343 chars, same reference) showed a real pacing dip specifically at 245
+    chars (12.05 chars/s vs. 17.32 and 13.94 chars/s on its neighbors, and 6+
+    seconds of audio beyond what the surrounding pace would predict) - the same
+    rambling/instability failure mode previously characterized only on short
+    backchannel text can apparently also hit mid-length response chunks. Samples
+    saved to `voice_refs/audition/chunk_length_accent/` for a listening verdict
+    on whether this is what read as "British accent mid-sentence" - not
+    confirmed, needs an ear, but it's a real, measured length-correlated anomaly
+    independent of the truncation question.
+  - **Acronym pronunciation.** `normalize.py`: all-caps 2-5 letter runs are
+    spelled letter-by-letter with periods ("PLA" -> "P. L. A.") - bare-space
+    joining ("P L A") still garbled on transcription, periods were load-bearing,
+    not cosmetic. Small exception list (`NASA`, `OK`) for ones pronounced as a
+    word. Tested PETG since it looked borderline on paper: it's not an
+    exception - wrong both alone ("Try PETG instead." -> "Try PG instead.") and
+    next to PLA ("Pele prints easier than peachy.") - spelled out it transcribed
+    clean every time. Caught and fixed a bug in the fix itself: naive
+    implementation double-punctuated at sentence end ("PLA." -> "P. L. A..") -
+    fixed by checking the following character before adding a trailing period.
+    `°C`/`F` temperature units and mixed-alnum extensions (`3MF`) are a known
+    remaining normalization gap (pass through unconverted) - not yet fixed, no
+    ticket for it yet.
+  - **Response verbosity.** `persona.md`: explicit 1-2 sentence rule for factual
+    questions, with the why (spoken vs. written - a listener can't skim ahead or
+    skip to the part they wanted). Sanity-checked against the real LLM+persona:
+    four different factual questions all came back in 2-3 sentences (including
+    the mandated short-opener sentence) instead of paragraphs.
+  `scripts/latency_report.py` (A4's spec deliverable) gained a `--until` option
+  alongside `--since` - the log files accumulate ad-hoc diagnostic calls between
+  live tests too (direct `engine.synthesize()`/`brain_client.stream()` calls made
+  while debugging), which `--since` alone can't exclude from a report scoped to
+  one specific live-test window.
+  **Actual numbers, first time run end-to-end** (both real live-test windows,
+  isolated via `ears.jsonl` wake-event timestamps so diagnostic-call noise from
+  this same session couldn't leak in): wake word detect is the only stage inside
+  budget (median 1.3-2.4ms vs. 50ms). Every other stage is over: VAD endpoint
+  fixed at 610ms (this is `min_silence_duration_ms=600` plus overhead, not
+  variance - CLAUDE.md already decided not to tune this, backchannel prompting
+  covers the cost instead), STT 313-538ms median (vs. 300ms), LLM TTFT 681-811ms
+  median (vs. 400ms - one outlier at 36.3s in the FDM window traced to a
+  `keep_alive=30m` cold-reload after a 47.8-minute idle gap between test
+  sessions, not a pipeline bug), TTS first chunk 1.4-2.8s median (vs. 200ms).
+  Derived first-audio-out: 3.1-4.6s against the 1.15s target. A4's done-when
+  ("three turns without feeling like waiting on a machine") is met subjectively,
+  but the numbers say clearly why A5 (latency tuning) is next, not optional
+  polish.
+
+**Next**: A5 (latency tuning) - every stage but wake word detect is over budget,
+TTS first chunk is the biggest single gap (1.4-2.8s vs. 200ms). Pending, not yet
+acted on: a listening verdict on whether the length-correlated pacing anomaly
+above (`voice_refs/audition/chunk_length_accent/`) is the source of the reported
+accent drift; if confirmed, extending `backchannel_pool.py`'s duration-sanity
+retry to the main response path is the likely fix, not yet built since it wasn't
+this session's call to make unilaterally. `°C`/`F` and mixed-alnum unit
+normalization gaps noted above, not yet fixed.
 
 ## Architecture
 

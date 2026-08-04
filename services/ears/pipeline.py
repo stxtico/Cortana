@@ -36,7 +36,7 @@ import json
 import time
 import tomllib
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -70,10 +70,20 @@ def _to_int16(frame: np.ndarray) -> np.ndarray:
     return np.clip(frame * 32768.0, -32768, 32767).astype(np.int16)
 
 
-async def listen() -> AsyncIterator[str]:
+async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str]:
     """Yields one transcribed utterance each time the wake word fires, passes
     verification (if enabled), and the following speech reaches an endpoint. Runs
-    until the caller stops iterating."""
+    until the caller stops iterating.
+
+    on_wake, if given, fires synchronously the instant a debounced wake event is
+    detected - before verification, before recording even starts. This is the
+    earliest signal this architecture has for "the user wants attention now," and
+    it's what services/brain/loop.py hangs barge-in off: cancelling in-flight TTS
+    playback can't wait for verification/VAD-end/STT to finish, or "immediately"
+    (PLAN.md's barge-in spec) wouldn't be true. A false wake accept firing this
+    early could cut off playback unnecessarily - the trained model's measured
+    false-accept rate was low enough in calibration to accept that trade, not
+    something this function tries to filter."""
     config = _load_config()
     sample_rate = config["sample_rate"]
     frame_size = config["frame_size"]
@@ -159,6 +169,8 @@ async def listen() -> AsyncIterator[str]:
                     last_wake_time = now
                     utterance_id += 1
                     _log({"stage": "wake", "utterance_id": utterance_id, "latency_ms": event.latency_ms, "score": event.score})
+                    if on_wake is not None:
+                        on_wake()
 
                     state = "recording"
                     utterance_frames = []
@@ -209,6 +221,7 @@ async def listen() -> AsyncIterator[str]:
 
                     latency_ms = vad_event.latency_ms if vad_event else max_utterance_s * 1000
                     _log({"stage": "vad", "utterance_id": utterance_id, "latency_ms": latency_ms, "timed_out": timed_out})
+                    vad_end_time = time.perf_counter()
 
                     audio = np.concatenate(utterance_frames)
                     transcript = stt.transcribe(audio)
@@ -222,11 +235,20 @@ async def listen() -> AsyncIterator[str]:
                             yield decision.text
                         else:
                             if decision.action == "backchannel":
-                                _log({"stage": "backchannel", "utterance_id": utterance_id, "text": decision.backchannel.text})
+                                # From VAD-end (the user actually stopped talking) to
+                                # play_audio() starting - how long someone waits in
+                                # silence before hearing the backchannel, not just how
+                                # long the pool lookup itself took.
+                                backchannel_latency_ms = (time.perf_counter() - vad_end_time) * 1000
+                                _log({
+                                    "stage": "backchannel", "utterance_id": utterance_id,
+                                    "text": decision.backchannel.text,
+                                    "latency_ms": round(backchannel_latency_ms, 1),
+                                })
                                 await play_audio(decision.backchannel.audio, decision.backchannel.sample_rate)
                                 asyncio.ensure_future(get_pool().ensure_filled())
                             else:
-                                _log({"stage": "backchannel", "utterance_id": utterance_id, "text": None})
+                                _log({"stage": "backchannel", "utterance_id": utterance_id, "text": None, "latency_ms": None})
                             state = "awaiting_resume"
                             resume_deadline = time.perf_counter() + decision.resume_window_s
                             vad.reset()
