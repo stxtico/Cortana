@@ -2,7 +2,10 @@
 
 [models]
 fast       = ""
-primary    = "gemma4:12b"
+primary    = "gemma4:e4b"   # switched from gemma4:12b - elastic model, 3.2GB resident vs
+                             # ~9.8GB, tested against A8's tool-calling demands (selection,
+                             # JSON well-formedness, no invented tools, multi-step chaining)
+                             # and matched gemma4:12b on every case. See CLAUDE.md.
 heavy      = ""
 alt        = ""
 endpoint   = "http://localhost:11434"
@@ -38,15 +41,112 @@ verify_lookahead_ms = 500        # additional audio captured after the trigger f
 
 [audio.vad]
 threshold                = 0.5
-min_silence_duration_ms  = 300   # trailing silence required before an utterance is considered ended
+# 600ms, not the 300ms A2 shipped with. scripts/vad_pause_test.py measured real
+# hesitation gaps (mid-sentence, before a number, reaching for a word) at 582-1822ms
+# - every threshold in the 300-500ms range clipped the same speech identically, and a
+# value that never clips (~2s) would tax every single turn with that much trailing
+# silence. Stopped tuning the threshold; backchannel prompting (below) covers the
+# error case instead - the cost of guessing wrong is a short "go on?", not silence
+# or a mangled transcript.
+min_silence_duration_ms  = 600
 speech_pad_ms            = 30
 max_utterance_s          = 15    # safety cutoff if VAD never sees enough silence to end on its own (false wake trigger, user walks away mid-sentence)
+
+[audio.backchannel]
+# On VAD endpoint, services/ears/completeness.py checks whether the transcript looks
+# finished or abandoned (non-LLM heuristic - VRAM on the 3080 Ti is already over
+# capacity with gemma4:12b + Whisper + XTTS resident, see CLAUDE.md, so this can't be
+# a [models].fast call the way it was first scoped). If abandoned, a pre-rendered
+# line plays instead of passing the fragment to the brain (services/ears/
+# backchannel_pool.py - never generated live, that would already have missed its
+# moment), and the pipeline listens for a resume without requiring the wake word
+# again. See services/ears/backchannel.py for the state machine.
+enabled           = true
+resume_window_s   = 4.0     # how long to listen for a resume before giving up and finalizing
+base_cooldown_s   = 20.0    # minimum spacing between any two backchannels
+escalation_factor = 3.0     # cooldown multiplier per consecutive unanswered prompt
+max_cooldown_s    = 300.0   # cap on escalated cooldown
+pool_min_size     = 5       # regenerate when the pool drops to this size
+pool_target_size  = 10
 
 [audio.stt]
 model        = "large-v3-turbo"
 device       = "cuda"
 compute_type = "float16"
 language     = "en"
+
+[voice]
+engine        = "xtts"   # "kokoro" (fast dev baseline) or "xtts" (production, cloned voice — see PROMPTS.md A3 step 3)
+synth_workers = 1        # concurrent sentence-synthesis workers in speak_stream() - see tts.py
+# How speak_stream() groups tokens into synthesis calls - see tts.py's _CONSUMERS.
+#   per_sentence - each sentence its own call. Fastest first audio, but XTTS
+#                  conditions on isolated text, which measurably changes delivery
+#                  character (see CLAUDE.md's path-divergence investigation).
+#   whole_text   - the entire response as one call. Best delivery character, zero
+#                  streaming - no audio until generation finishes.
+#   hybrid       - sentence 1 alone (fast first audio), everything after as one call
+#                  once the stream ends. Still being measured against whole_text for
+#                  gap size before this becomes the default - see CLAUDE.md.
+strategy      = "per_sentence"
+
+[voice.kokoro]
+lang_code = "a"        # 'a' = American English (misaki G2P language code)
+voice     = "af_heart"
+speed     = 1.0
+
+[voice.xtts]
+language = "en"
+device   = "cuda"
+# Which [voice.xtts.references] entry XTTSEngine.use_reference() switches to at
+# startup. The logic for switching mid-session (calm vs soft) comes later with the
+# persona work - for now this is just the default engine.py's factory passes through.
+default_reference = "calm"
+
+# Inference parameters - see services/voice/xtts_engine.py's synthesize() for how
+# these get passed to Xtts.inference(). Defaults below are XTTS's own library
+# defaults; tune here after listening to scripts/xtts_param_sweep.py's output, not
+# by hardcoding overrides in code.
+temperature         = 0.75   # lower flattens delivery, higher adds variation but risks artifacts
+repetition_penalty  = 10.0
+length_penalty      = 1.0
+top_k               = 50
+top_p               = 0.85
+speed               = 1.0
+
+[voice.xtts.references]
+# Picked by ear from voice_refs/audition/ output. Both cleared prep_voice_refs.py's
+# cleanliness filters (SNR/spectral-flatness) and the radio-filter check.
+calm = "voice_refs/calm/voice_ref_14.wav"   # normal responses (calm_14)
+soft = "voice_refs/new/full_clip.wav"       # softer/more human moments - picked despite being
+                                             # past XTTS's ~30s useful reference length; the full
+                                             # 44.7s clip won by ear anyway
+
+[voice.prep_refs]
+# scripts/prep_voice_refs.py — PROMPTS.md A3 step 2
+source_dir           = "voice_source"   # gitignored; drop cloning source audio/video here
+export_dir            = "voice_refs"
+export_sample_rate    = 24000   # mono, high enough for XTTS reference quality without keeping full 48kHz
+min_duration_s        = 6.0     # candidates outside [min, max] are dropped, not truncated
+max_duration_s        = 25.0
+top_n                 = 15
+min_snr_db            = 15.0    # segment RMS vs. its own leading/trailing-silence noise floor
+max_spectral_flatness = 0.3     # 0=tonal/voiced, 1=noise-like; rejects hiss/static, not music-bed (that needs listening)
+min_avg_logprob       = -1.0    # faster-whisper's own low-confidence heuristic
+max_no_speech_prob    = 0.5
+
+# --rank-by calm: same filters above still gate candidates in; these just change how
+# survivors are ranked and how many get exported, aimed at calm/level delivery instead
+# of raw acoustic quality (see scripts/prep_voice_refs.py).
+calm_top_n             = 20
+radio_band_low_hz      = 300.0
+radio_band_high_hz     = 3400.0
+radio_in_band_threshold = 0.75   # flag as likely comms/radio-filtered if >= this fraction of
+                                  # spectral power falls inside [low_hz, high_hz]. Calibrated
+                                  # against cortana_lines.mp4.mp4: unfiltered lines cluster at
+                                  # 0.41-0.63, one genuinely radio-chattery segment hit 0.85 -
+                                  # an initial guess of 0.97 missed it entirely. Still a
+                                  # heuristic - re-check this gap if a new source behaves
+                                  # differently.
 
 [latency]
 

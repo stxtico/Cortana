@@ -4,12 +4,24 @@ version = "0.1.0"
 description = "Local voice assistant + agent"
 requires-python = ">=3.12"
 dependencies = [
+    "coqui-tts[codec]>=0.27.5",
     "faster-whisper>=1.2.1",
     "httpx>=0.27",
-    "numpy>=2.5.1",
+    "kokoro>=0.9.4",
+    "numpy>=1.24,<2.5",
     "nvidia-cublas-cu12>=12.9.2.10",
-    "nvidia-cudnn-cu12>=9.24.0.43",
     "openwakeword>=0.4.0",
     "silero-vad>=6.2.1",
     "sounddevice>=0.5.5",
+    "soundfile>=0.14.0",
+    "torch>=2.13.0",
+    "transformers>=4.57,<5.1",
 ]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu132" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true

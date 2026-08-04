@@ -38,20 +38,9 @@ against it for the rest of the project.
 > Build `services/brain/client.py`: a thin async Ollama client that streams tokens.
 >
 > Requirements: reads model name and endpoint from `cortana.toml`; exposes
-> `async def stream(messages, tools=None, think: bool = False) -> AsyncIterator[str]`;
-> supports OpenAI-format tool calling; logs time-to-first-token and total duration as JSON
-> lines to `logs/brain.jsonl` on every call.
->
-> `think` is a per-call argument, not a global toggle — `[thinking]` in `cortana.toml` holds
-> the default per use case (`conversational = false`, `cad = true`, `heavy = true`) but the
-> call site decides every time, so A14 (CAD) and B3 (heavy mode) can turn it on without
-> touching the voice loop.
->
-> Gotcha already hit once in `scripts/bench.py`: with `think` unset, Ollama streams hidden
-> reasoning through a separate `"thinking"` field while `"response"` stays empty until
-> reasoning finishes, then flushes the final answer as one chunk. TTFT must be measured off
-> the first non-empty `response` OR `thinking` chunk, whichever arrives first — otherwise
-> you silently measure "reasoning done," not first token out.
+> `async def stream(messages, tools=None) -> AsyncIterator[str]`; supports OpenAI-format
+> tool calling; logs time-to-first-token and total duration as JSON lines to
+> `logs/brain.jsonl` on every call.
 >
 > No agent loop yet, no tools yet. Just streaming plus instrumentation. Include a
 > `__main__` block I can run to send one prompt and watch tokens arrive.
@@ -81,9 +70,18 @@ three latencies logged.
 
 ---
 
-## A3 — Voice: streaming TTS
+## A3 — Voice: streaming TTS with the cloned voice
 
-> Build `services/voice/tts.py` using Kokoro TTS.
+The target is a specific cloned voice, so **Coqui XTTS v2 is the production engine.**
+Kokoro is the development baseline — build the plumbing against something fast and
+predictable, then switch. Have the source audio for cloning ready before starting.
+
+### Step 1 — Engine-agnostic TTS layer
+
+> Build `services/voice/tts.py`, **engine-agnostic from the start**: engine selected in
+> `cortana.toml`, with Kokoro and Coqui XTTS v2 both supported behind one interface.
+> Implement Kokoro first — fast and predictable, which is what I want while getting the
+> plumbing right. Don't hardcode anything Kokoro-specific into the calling path.
 >
 > The critical requirement: `async def speak_stream(token_iterator)` buffers incoming
 > tokens until a sentence boundary, then immediately synthesizes and plays that sentence
@@ -92,10 +90,57 @@ three latencies logged.
 > Also add `sanitize()` that strips markdown, code fences, list markers, and URLs before
 > synthesis — spoken output must be plain prose.
 >
-> Log time-to-first-audio-chunk.
+> Log time-to-first-audio-chunk tagged with the active engine, so the two are directly
+> comparable later. Reuse one persistent model instance per process (rule 7).
 
-**Done when:** you pipe a slow token stream in and audio starts before generation
-finishes.
+### Step 2 — Prep voice references
+
+> I have source dialogue for XTTS voice cloning at [path]. Build
+> `scripts/prep_voice_refs.py`:
+>
+> 1. Run silero-vad over the source to find speech segments; drop anything under 6s or
+>    over 25s.
+> 2. For each candidate compute RMS level, an estimated noise floor from leading/trailing
+>    silence, and spectral flatness — clips with music or effects underneath score badly
+>    on these.
+> 3. Transcribe each with our existing Whisper to confirm single-speaker clean speech.
+>    Flag any where confidence is low; that usually means something else is in the mix.
+> 4. Rank by cleanliness and export the top 15 as individual WAVs to `voice_refs/`, with a
+>    manifest listing metrics and transcript for each.
+>
+> Also flag separately any segment containing the wake word or the assistant's name in
+> ordinary dialogue — those are useful hard negatives for the wake-word model.
+>
+> Don't pick a final reference. I'll listen to the candidates myself.
+
+**Choosing among them.** The metrics are good at *rejecting* bad clips and bad at
+predicting which good clip clones well:
+
+- **Audition 3-5, not 1.** Same test sentence through XTTS from each reference, pick by
+  ear. Different clips produce noticeably different clones.
+- **Clean beats representative.** A dry, boring line outperforms a dramatic one.
+- **Match the everyday register.** She'll mostly say short factual things. Clone from
+  calm, level delivery — emotional source audio bleeds that affect into "your calendar is
+  clear tomorrow," which is worse than a neutral voice.
+
+### Step 3 — Switch to XTTS and measure
+
+> Switch `[voice].engine` in `cortana.toml` to XTTS v2 with the chosen reference from
+> `voice_refs/`. Kokoro stays available as a fallback engine, selectable in config.
+>
+> **Cache the speaker latents** — XTTS recomputes the speaker embedding from the reference
+> on every call unless told otherwise. Compute once at startup, reuse for the process
+> lifetime. Same principle as rule 7, and the single biggest XTTS optimization.
+>
+> Then re-measure: time-to-first-audio-chunk for XTTS vs. the Kokoro baseline, at short
+> (one sentence), medium, and long outputs. Report both against the 200ms budget.
+>
+> If XTTS blows the budget badly, don't tune it yet — give me the numbers first. Options
+> we'd weigh: shortening the first sentence so the first chunk is cheap, or accepting a
+> higher budget for the first chunk specifically and keeping the rest streaming.
+
+**Done when:** she speaks in the target voice, audio starts before generation finishes,
+and you have XTTS vs. Kokoro latency numbers side by side.
 
 ---
 

@@ -8,3 +8,6 @@ __pycache__/
 .venv/
 
 .claude/
+
+voice_source/
+voice_refs/**/*.mp4

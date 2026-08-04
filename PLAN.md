@@ -303,7 +303,7 @@ taking longer than you expect, and do not move on until latency is right.
 | Endpointing | silero-vad | Never use fixed-duration recording. This is non-negotiable for natural feel. |
 | STT | faster-whisper, `large-v3-turbo` | Batch by design; feed it VAD-segmented chunks. |
 | LLM | Ollama, streaming enabled | `stream: true`. Non-negotiable. |
-| TTS | Kokoro TTS | Piper is archived. Use Coqui XTTS instead only if you want voice cloning. |
+| TTS | Kokoro TTS (baseline), Coqui XTTS v2 (cloning) | Piper is archived. Build engine-agnostic — see below. |
 
 ### Latency budget
 
@@ -320,6 +320,33 @@ first audio out        ~1.15s
 ```
 
 If any stage blows its budget, fix that stage before adding features.
+
+### Build the TTS layer engine-agnostic
+
+**Coqui XTTS v2 is the production engine** — the target is a specific cloned voice, so
+plan around that rather than treating it as an add-on. Kokoro is the *development*
+baseline: fast, predictable, and the right thing to build the streaming, sentence-boundary
+handoff, and latency instrumentation against. Both live behind one interface, engine
+selected in `cortana.toml`, so the switchover is a config change rather than a refactor.
+
+**Voice cloning (XTTS v2)** needs 6-30s of clean reference audio: single speaker, no music,
+no sound effects, no overlapping dialogue. XTTS clones whatever is in the reference,
+artifacts included — so a quiet dialogue line beats anything with ambience under it. Try
+several references and pick by ear; a mediocre clone lands in an uncanny middle that's more
+distracting than a clean generic voice.
+
+**Expect XTTS to cost latency.** Cloned voices carry more inference cost than Kokoro against
+a 200ms first-chunk budget, and on a 12GB card already holding the LLM and Whisper it may be
+what forces model swapping before the Spark arrives. Log time-to-first-audio-chunk for
+whichever engine is active so the two are directly comparable rather than argued about.
+
+**Cache the speaker latents.** XTTS recomputes the speaker embedding from the reference on
+every call unless told otherwise. Compute once at startup, reuse for the process lifetime —
+same principle as the persistent-client rule, and the single biggest XTTS optimization.
+Keeping Kokoro selectable also gives you a fallback if a long session needs the memory back.
+
+Character comes mostly from `persona.md`, not timbre. Get the voice *plumbing* right first;
+treat the specific voice as tuning.
 
 ### The two things that matter most
 
@@ -1015,6 +1042,8 @@ awaiting approval.
 | Persona drifting oddly | Alt-mode turns not tagged; secondary's voice leaking into the line bank |
 | Lines feel generic | Generated without today's context injected into the prompt |
 | Reaction still feels laggy | Not splitting it — animation must fire at 0ms, audio can trail |
+| TTS blows the 200ms budget | XTTS cloning cost — compare against the Kokoro baseline before blaming the card |
+| Cloned voice sounds "off" | Reference clip had music/effects/second speaker under it — reclone from clean audio |
 
 ---
 

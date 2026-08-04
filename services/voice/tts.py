@@ -1,0 +1,440 @@
+"""Engine-agnostic streaming TTS. speak_stream() buffers LLM tokens until a sentence
+boundary, then synthesizes and plays that sentence immediately while later tokens
+keep arriving for the next one - never waits for the full response.
+
+Engine picked by [voice].engine in cortana.toml. This module only ever talks to the
+services.voice.engine.TTSEngine interface, never an engine's internals, so switching
+Kokoro -> XTTS (PROMPTS.md A3 step 3) is a config change, not a code change.
+
+One persistent engine instance per process (rule 7, CLAUDE.md) - model load is too
+slow to redo per call, so it's lazily created once on first use and reused for the
+process lifetime, with close() for shutdown.
+
+Every sentence is sanitize()'d (strip markdown/URLs) then normalize()'d
+(services/voice/normalize.py - numbers/decimals/times/units to spoken form, e.g.
+"1.2mm" -> "one point two millimeters") before synthesis, applied uniformly here so
+no caller has to remember to do it. Chosen over raw-digit input by ear (voice_refs/
+audition/normalization_test/ and units_vs_full/) - XTTS reading raw digits was a
+real part of what read as robotic.
+"""
+
+import asyncio
+import json
+import re
+import time
+import tomllib
+from collections.abc import AsyncIterator
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+import sounddevice as sd
+
+from services.voice.engine import TTSEngine
+from services.voice.normalize import normalize
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+CONFIG_PATH = ROOT / "config" / "cortana.toml"
+VOICE_LOG_PATH = ROOT / "logs" / "voice.jsonl"
+
+_engine: TTSEngine | None = None
+_engine_name: str | None = None
+
+# Punctuation + optional closing quote/bracket, followed by whitespace. Trailing
+# whitespace is required (not end-of-string) so a still-streaming decimal like "3.14"
+# isn't split on the "3." before the rest of the token has arrived - the char right
+# after "." fails the \s+ check while more digits are still incoming. Known
+# limitation: "Mr. Smith" still splits early; not worth an abbreviation list yet.
+_SENTENCE_END_RE = re.compile(r'[.!?]+[\'")\]]*\s+')
+
+_CODE_FENCE_RE = re.compile(r'```.*?```', re.DOTALL)
+_INLINE_CODE_RE = re.compile(r'`([^`]*)`')
+_MARKDOWN_LINK_RE = re.compile(r'\[([^\]]*)\]\([^)]*\)')
+_URL_RE = re.compile(r'https?://\S+')
+_HEADER_RE = re.compile(r'^#{1,6}\s+', re.MULTILINE)
+_LIST_MARKER_RE = re.compile(r'^\s*(?:[-*+]|\d+[.)])\s+', re.MULTILINE)
+_BLOCKQUOTE_RE = re.compile(r'^\s*>\s?', re.MULTILINE)
+_EMPHASIS_RE = re.compile(r'(\*\*\*|\*\*|\*|___|__|_)(\S.*?\S|\S)\1')
+
+
+def sanitize(text: str) -> str:
+    """Strip markdown, code fences, list markers, and URLs so only plain prose
+    reaches the synthesizer."""
+    text = _CODE_FENCE_RE.sub(' ', text)
+    text = _INLINE_CODE_RE.sub(r'\1', text)
+    text = _MARKDOWN_LINK_RE.sub(r'\1', text)
+    text = _URL_RE.sub('', text)
+    text = _HEADER_RE.sub('', text)
+    text = _LIST_MARKER_RE.sub('', text)
+    text = _BLOCKQUOTE_RE.sub('', text)
+    text = _EMPHASIS_RE.sub(r'\2', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _load_config() -> dict:
+    with CONFIG_PATH.open("rb") as f:
+        return tomllib.load(f)["voice"]
+
+
+def _create_engine(name: str, engine_config: dict) -> TTSEngine:
+    if name == "kokoro":
+        from services.voice.kokoro_engine import KokoroEngine
+        return KokoroEngine(**engine_config)
+    if name == "xtts":
+        from services.voice.xtts_engine import XTTSEngine
+        return XTTSEngine(**engine_config)
+    raise ValueError(f"Unknown [voice].engine: {name!r}")
+
+
+def _get_engine() -> tuple[TTSEngine, str]:
+    # Reused across calls - loading a TTS model per call would cost seconds, not the
+    # ~280ms httpx.AsyncClient case rule 7 was written for, but the same principle.
+    global _engine, _engine_name
+    if _engine is None:
+        config = _load_config()
+        name = config["engine"]
+        engine_config = config.get(name, {})
+        _engine = _create_engine(name, engine_config)
+        _engine_name = name
+    return _engine, _engine_name
+
+
+def close() -> None:
+    global _engine, _engine_name
+    if _engine is not None:
+        _engine.close()
+    _engine = None
+    _engine_name = None
+
+
+def _log(record: dict) -> None:
+    VOICE_LOG_PATH.parent.mkdir(exist_ok=True)
+    with VOICE_LOG_PATH.open("a") as f:
+        f.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **record}) + "\n")
+
+
+async def play_audio(audio: np.ndarray, sample_rate: int) -> None:
+    def _blocking() -> None:
+        sd.play(audio, sample_rate)
+        sd.wait()
+    try:
+        await asyncio.to_thread(_blocking)
+    except asyncio.CancelledError:
+        # asyncio.to_thread cancellation only stops *awaiting* the thread - the
+        # underlying sd.wait() call keeps blocking in the background until the
+        # audio naturally finishes unless sd.stop() actually halts the stream.
+        # Needed for barge-in: killing this task alone doesn't kill the sound.
+        sd.stop()
+        raise
+
+
+def _split_sentences(buffer: str) -> tuple[list[str], str]:
+    """Pull complete sentences off the front of buffer. Returns (sentences, remainder)."""
+    sentences = []
+    while True:
+        match = _SENTENCE_END_RE.search(buffer)
+        if match is None:
+            break
+        sentences.append(buffer[:match.end()])
+        buffer = buffer[match.end():]
+    return sentences, buffer
+
+
+async def _consume_per_sentence(token_iterator: AsyncIterator[str], chunk_queue: "asyncio.Queue[str | None]") -> None:
+    """Every sentence is its own synthesis unit, the instant it completes. Fastest
+    time-to-first-audio, but XTTS conditions each call on isolated text - no
+    following-sentence context - which measurably changes delivery character, not
+    just introduces gaps (see CLAUDE.md's path-divergence investigation)."""
+    buffer = ""
+    async for token in token_iterator:
+        buffer += token
+        sentences, buffer = _split_sentences(buffer)
+        for sentence in sentences:
+            await chunk_queue.put(sentence)
+    if buffer.strip():
+        await chunk_queue.put(buffer)
+    await chunk_queue.put(None)
+
+
+async def _consume_whole_text(token_iterator: AsyncIterator[str], chunk_queue: "asyncio.Queue[str | None]") -> None:
+    """The entire response as one synthesis call - best delivery character (XTTS
+    conditions on the complete text), but zero streaming: no audio until the full
+    response has been generated. For comparison/short-response use, not the default
+    for anything long enough that time-to-first-audio matters."""
+    buffer = ""
+    async for token in token_iterator:
+        buffer += token
+    if buffer.strip():
+        await chunk_queue.put(buffer)
+    await chunk_queue.put(None)
+
+
+async def _consume_hybrid(token_iterator: AsyncIterator[str], chunk_queue: "asyncio.Queue[str | None]") -> None:
+    """Sentence 1 alone (fast time-to-first-audio, same as per_sentence), then
+    everything after buffered until the stream ends and sent as one whole-text call
+    (delivery character closer to whole_text for the remainder, which is most of the
+    response by word count in a typical multi-sentence reply)."""
+    buffer = ""
+    first_sentence_sent = False
+    async for token in token_iterator:
+        buffer += token
+        if not first_sentence_sent:
+            sentences, buffer = _split_sentences(buffer)
+            if sentences:
+                await chunk_queue.put(sentences[0])
+                first_sentence_sent = True
+                if len(sentences) > 1:
+                    buffer = "".join(sentences[1:]) + buffer
+    if buffer.strip():
+        await chunk_queue.put(buffer)
+    await chunk_queue.put(None)
+
+
+async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asyncio.Queue[str | None]") -> None:
+    """Three-way split: sentence 1 alone, sentences 2-3 together, everything after
+    as a final call once the stream ends. Fallback for when hybrid's 2-way split
+    leaves too large a gap between sentence 1's playback and the remainder's
+    synthesis - measured 3.1-3.6s on a realistic 4-sentence response (sentence 1's
+    ~0.8s playback covering only a fraction of the ~3.8-4s it took to synthesize the
+    other three sentences as one call). Splitting off a second chunk gives synthesis
+    an earlier midpoint to catch up at, at the cost of one more character-shift
+    boundary than hybrid."""
+    buffer = ""
+    collected: list[str] = []
+    stage = 0  # 0: need 1 sentence for chunk 1, 1: need 2 more for chunk 2, 2: remainder only
+    async for token in token_iterator:
+        buffer += token
+        if stage < 2:
+            sentences, buffer = _split_sentences(buffer)
+            for i, sentence in enumerate(sentences):
+                collected.append(sentence)
+                if stage == 0 and len(collected) == 1:
+                    await chunk_queue.put(collected[0])
+                    collected = []
+                    stage = 1
+                elif stage == 1 and len(collected) == 2:
+                    await chunk_queue.put("".join(collected))
+                    collected = []
+                    stage = 2
+                    leftover = sentences[i + 1:]
+                    if leftover:
+                        buffer = "".join(leftover) + buffer
+                    break
+    if buffer.strip():
+        await chunk_queue.put(buffer)
+    await chunk_queue.put(None)
+
+
+_CONSUMERS = {
+    "per_sentence": _consume_per_sentence,
+    "whole_text": _consume_whole_text,
+    "hybrid": _consume_hybrid,
+    "hybrid3": _consume_hybrid3,
+}
+
+
+async def speak_stream(
+    token_iterator: AsyncIterator[str], synth_workers: int | None = None, strategy: str | None = None,
+) -> None:
+    """Consume an async stream of LLM tokens, synthesizing and playing chunks as
+    they're ready. How tokens get grouped into synthesis units is controlled by
+    strategy (default from [voice].strategy): "per_sentence" (fastest first audio,
+    each sentence isolated), "whole_text" (best delivery character, no streaming -
+    waits for the full response), "hybrid" (sentence 1 alone for fast first audio,
+    everything after as one call once the stream ends), "hybrid3" (sentence 1, then
+    sentences 2-3, then the remainder), "inference_stream" (whole-text conditioning
+    AND progressive output in one call, via the engine's synthesize_stream() if it
+    has one - see xtts_engine.py; falls back to per_sentence if the active engine
+    doesn't support it). Chunk N+1's tokens keep accumulating in the background
+    while chunk N is synthesizing/playing, regardless of strategy - the full
+    response is never waited on except by whole_text's inherent design.
+
+    Three concurrent stages, not two - a queue between each: tokens -> chunks
+    (strategy-specific consumer above), chunks -> audio (_synthesize_all), audio ->
+    speakers (_play_all). Synthesis of chunk N+1 starts the instant a synthesis
+    worker is free, not when playback of chunk N finishes - otherwise a slow engine
+    would always show a gap between chunks equal to its own synthesis time,
+    independent of whether it could actually keep up. gap_ms on each "sentence" log
+    record is how long playback sat waiting on the audio queue: ~0 means synthesis
+    was already ahead, positive means it wasn't and there was an audible stall.
+
+    synth_workers (default from [voice].synth_workers, else 1): number of chunks
+    synthesized concurrently. >1 lets chunk N+1's synthesis overlap chunk N's
+    instead of queuing behind it - output order is still preserved (workers tag each
+    result with its sequence index; _synthesize_all buffers early arrivals and only
+    releases to the audio queue in order)."""
+    engine, engine_name = _get_engine()
+    config = _load_config()
+    if synth_workers is None:
+        synth_workers = config.get("synth_workers", 1)
+    if strategy is None:
+        strategy = config.get("strategy", "per_sentence")
+    if strategy != "inference_stream" and strategy not in _CONSUMERS:
+        raise ValueError(
+            f"Unknown [voice].strategy: {strategy!r} - expected one of {[*_CONSUMERS, 'inference_stream']}"
+        )
+    if strategy == "inference_stream" and type(engine).synthesize_stream is TTSEngine.synthesize_stream:
+        # Engine doesn't override synthesize_stream (e.g. Kokoro) - fall back rather
+        # than ever triggering its NotImplementedError in practice.
+        strategy = "per_sentence"
+
+    chunk_queue: asyncio.Queue[str | None] = asyncio.Queue()
+    audio_queue: asyncio.Queue[tuple[np.ndarray, dict] | None] = asyncio.Queue()
+    stream_start = time.perf_counter()
+
+    async def _stream_synthesize() -> None:
+        """inference_stream's synthesis stage: one whole-text chunk in from
+        _consume_whole_text, many audio chunks out - no chunk_queue reordering
+        needed (there's only ever one text unit, and XTTS yields its audio chunks
+        already in order)."""
+        chunk_index = 0
+        while True:
+            text = await chunk_queue.get()
+            if text is None:
+                break
+            clean = sanitize(text)
+            clean = normalize(clean) if clean else clean
+            if not clean:
+                continue
+            text_chars = len(clean)
+            last_chunk_time = time.perf_counter()
+            async for audio in engine.synthesize_stream(clean):
+                now = time.perf_counter()
+                chunk_synth_ms = (now - last_chunk_time) * 1000
+                last_chunk_time = now
+                if audio.size == 0:
+                    continue
+                chunk_index += 1
+                await audio_queue.put((audio, {
+                    "index": chunk_index, "chars": text_chars if chunk_index == 1 else 0,
+                    "synth_ms": round(chunk_synth_ms, 1),
+                }))
+        await audio_queue.put(None)
+
+    async def _synthesize_all() -> None:
+        indexed_queue: asyncio.Queue[tuple[int, str] | None] = asyncio.Queue()
+        completion_queue: asyncio.Queue[tuple[int, np.ndarray, float, int] | None] = asyncio.Queue()
+
+        async def _feed_workers() -> None:
+            idx = 0
+            while True:
+                chunk = await chunk_queue.get()
+                if chunk is None:
+                    break
+                clean = sanitize(chunk)
+                clean = normalize(clean) if clean else clean
+                if clean:
+                    idx += 1
+                    await indexed_queue.put((idx, clean))
+            for _ in range(synth_workers):
+                await indexed_queue.put(None)
+
+        async def _worker() -> None:
+            while True:
+                item = await indexed_queue.get()
+                if item is None:
+                    break
+                idx, clean = item
+                synth_start = time.perf_counter()
+                audio = await asyncio.to_thread(engine.synthesize, clean)
+                synth_ms = (time.perf_counter() - synth_start) * 1000
+                await completion_queue.put((idx, audio, synth_ms, len(clean)))
+            await completion_queue.put(None)
+
+        async def _emit_ready(pending: dict, next_needed: int) -> int:
+            while next_needed in pending:
+                audio, synth_ms, chars = pending.pop(next_needed)
+                if audio.size > 0:
+                    await audio_queue.put((audio, {
+                        "index": next_needed, "chars": chars, "synth_ms": round(synth_ms, 1),
+                    }))
+                next_needed += 1
+            return next_needed
+
+        async def _reorder() -> None:
+            pending: dict[int, tuple[np.ndarray, float, int]] = {}
+            next_needed = 1
+            workers_done = 0
+            while workers_done < synth_workers:
+                item = await completion_queue.get()
+                if item is None:
+                    workers_done += 1
+                    continue
+                idx, audio, synth_ms, chars = item
+                pending[idx] = (audio, synth_ms, chars)
+                next_needed = await _emit_ready(pending, next_needed)
+            next_needed = await _emit_ready(pending, next_needed)  # workers can finish out of order
+            await audio_queue.put(None)
+
+        await asyncio.gather(_feed_workers(), *[_worker() for _ in range(synth_workers)], _reorder())
+
+    async def _play_all() -> None:
+        # One persistent stream for the whole response, not a play_audio() call per
+        # chunk - measured separate sd.play()+sd.wait() calls at ~60-80ms of stream
+        # setup/teardown overhead each, on top of the audio's own duration. That's
+        # real dead air at every chunk boundary regardless of queue timing (gap_ms
+        # below only measures whether the next chunk was *ready* in time, not
+        # whether the hardware stream itself stayed continuous). A persistent
+        # OutputStream cut that to ~10-22ms. play_audio() itself is unchanged and
+        # still right for one-off single-clip playback (backchannel lines).
+        first_chunk = True
+        last_playback_end: float | None = None
+        stream = sd.OutputStream(samplerate=engine.sample_rate, channels=1, dtype="float32")
+        stream.start()
+        try:
+            while True:
+                item = await audio_queue.get()
+                dequeue_end = time.perf_counter()  # after the blocking wait, not before - that's the point
+                if item is None:
+                    break
+                audio, meta = item
+                gap_ms = (dequeue_end - last_playback_end) * 1000 if last_playback_end is not None else None
+                if first_chunk:
+                    ttfc_ms = (time.perf_counter() - stream_start) * 1000
+                    _log({"stage": "ttfc", "engine": engine_name, "ttfc_ms": round(ttfc_ms, 1)})
+                    first_chunk = False
+                _log({
+                    "stage": "sentence", "engine": engine_name, **meta,
+                    "audio_s": round(len(audio) / engine.sample_rate, 3),
+                    "gap_ms": round(gap_ms, 1) if gap_ms is not None else None,
+                })
+                try:
+                    await asyncio.to_thread(stream.write, audio)
+                except asyncio.CancelledError:
+                    # Barge-in: abort() drops whatever's still buffered immediately,
+                    # unlike stop() which finishes playing it out first.
+                    stream.abort()
+                    raise
+                last_playback_end = time.perf_counter()
+        finally:
+            await asyncio.to_thread(stream.stop)
+            stream.close()
+
+    if strategy == "inference_stream":
+        await asyncio.gather(_consume_whole_text(token_iterator, chunk_queue), _stream_synthesize(), _play_all())
+    else:
+        consume = _CONSUMERS[strategy]
+        await asyncio.gather(consume(token_iterator, chunk_queue), _synthesize_all(), _play_all())
+
+
+async def speak(text: str) -> None:
+    """Synthesize and play one complete string. Convenience wrapper around
+    speak_stream for callers that already have the full text."""
+    async def _one() -> AsyncIterator[str]:
+        yield text
+    await speak_stream(_one())
+
+
+async def _main() -> None:
+    import sys
+    text = " ".join(sys.argv[1:]) or (
+        "Hello. This is a streaming test of the Cortana voice pipeline, "
+        "spoken one sentence at a time as it arrives."
+    )
+    print(f"> {text}\n")
+    await speak(text)
+    print(f"(logged to {VOICE_LOG_PATH})")
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())

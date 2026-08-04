@@ -3,7 +3,10 @@
 State machine: LISTENING (feed wake, one frame at a time, keep a rolling lookback
 buffer) -> on detection -> RECORDING (feed VAD immediately; verification runs
 concurrently in a background thread over the lookback + first lookahead frames of
-the same recording, not sequentially before it) -> transcribe -> yield -> back to
+the same recording, not sequentially before it) -> transcribe -> completeness check
+-> either yield (finished thought) or AWAITING_RESUME (abandoned - play a
+backchannel and listen for a resume without requiring the wake word again, since a
+person continuing a thought doesn't re-say the assistant's name) -> back to
 LISTENING. If verification rejects, the recording is discarded, whether that's
 noticed mid-recording (checked every frame) or only at finalize time.
 
@@ -17,6 +20,15 @@ with RECORDING hides that cost on true positives - verification is usually resol
 before VAD would naturally end the utterance anyway, so the fast path pays nothing
 extra. Only very short genuine utterances (VAD ends before verification resolves)
 pay a residual wait, bounded by whatever verification time hadn't yet elapsed.
+
+AWAITING_RESUME exists because min_silence_duration_ms was raised from 300ms to
+600ms after scripts/vad_pause_test.py showed real hesitation gaps run 582-1822ms -
+no threshold in a usable range avoids clipping a genuine mid-thought pause. Instead
+of guessing wrong silently, services/ears/completeness.py flags a likely-abandoned
+transcript, services/ears/backchannel.py decides whether to play a pre-rendered
+backchannel (never generated live - see services/ears/backchannel_pool.py) and how
+long to wait, and a resumed utterance gets appended to the pending fragment rather
+than starting fresh. Toggle via [audio.backchannel].enabled.
 """
 
 import asyncio
@@ -31,9 +43,12 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
+from services.ears.backchannel import BackchannelSession
+from services.ears.backchannel_pool import get_pool
 from services.ears.stt import Transcriber, Transcript
 from services.ears.vad import EndpointDetector
 from services.ears.wake import WakeWordDetector
+from services.voice.tts import play_audio
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
@@ -86,6 +101,17 @@ async def listen() -> AsyncIterator[str]:
         language=config["stt"]["language"],
     )
 
+    backchannel_cfg = config.get("backchannel", {})
+    session = None
+    if backchannel_cfg.get("enabled", False):
+        session = BackchannelSession(
+            resume_window_s=backchannel_cfg.get("resume_window_s", 4.0),
+            base_cooldown_s=backchannel_cfg.get("base_cooldown_s", 20.0),
+            escalation_factor=backchannel_cfg.get("escalation_factor", 3.0),
+            max_cooldown_s=backchannel_cfg.get("max_cooldown_s", 300.0),
+        )
+        asyncio.ensure_future(get_pool().ensure_filled())  # eager pre-fill, non-blocking
+
     loop = asyncio.get_running_loop()
     frame_queue: asyncio.Queue = asyncio.Queue()
 
@@ -110,6 +136,7 @@ async def listen() -> AsyncIterator[str]:
     verify_task: asyncio.Task | None = None
     verify_task_start = 0.0
     verify_confirmed = False
+    resume_deadline = 0.0
 
     async def _run_verify(audio: np.ndarray) -> Transcript:
         return await asyncio.to_thread(stt.transcribe, audio)
@@ -187,12 +214,48 @@ async def listen() -> AsyncIterator[str]:
                     transcript = stt.transcribe(audio)
                     _log({"stage": "stt", "utterance_id": utterance_id, "latency_ms": transcript.latency_ms, "text": transcript.text})
 
-                    if transcript.text:
+                    if transcript.text and session is not None:
+                        decision = session.handle_utterance(transcript.text, audio, sample_rate)
+                        if decision.action == "yield":
+                            state = "listening"
+                            lookback.clear()
+                            yield decision.text
+                        else:
+                            if decision.action == "backchannel":
+                                _log({"stage": "backchannel", "utterance_id": utterance_id, "text": decision.backchannel.text})
+                                await play_audio(decision.backchannel.audio, decision.backchannel.sample_rate)
+                                asyncio.ensure_future(get_pool().ensure_filled())
+                            else:
+                                _log({"stage": "backchannel", "utterance_id": utterance_id, "text": None})
+                            state = "awaiting_resume"
+                            resume_deadline = time.perf_counter() + decision.resume_window_s
+                            vad.reset()
+                    elif transcript.text:
+                        state = "listening"
+                        lookback.clear()
                         yield transcript.text
+                    else:
+                        state = "listening"
+                        lookback.clear()
 
-                    state = "listening"
                     utterance_frames = []
+
+            elif state == "awaiting_resume":
+                vad_event = vad.process_frame(frame)
+                if vad_event is not None and vad_event.kind == "start":
+                    state = "recording"
+                    utterance_frames = [frame]
+                    recording_start = time.perf_counter()
+                    pre_trigger_audio = []
+                    verify_task = None
+                    verify_confirmed = True  # continuing an existing exchange, not a fresh wake trigger
+                elif time.perf_counter() > resume_deadline:
+                    pending = session.handle_resume_timeout()
+                    _log({"stage": "backchannel_timeout", "utterance_id": utterance_id, "yielded": bool(pending)})
+                    state = "listening"
                     lookback.clear()
+                    if pending:
+                        yield pending
 
 
 async def _main() -> None:
