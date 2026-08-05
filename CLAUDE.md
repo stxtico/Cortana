@@ -766,16 +766,77 @@ cortana/
 
 ## Latency budget (Phase 1, enforced in code)
 
-| Stage | Target |
-|---|---|
-| Wake word detect | 50ms |
-| VAD endpoint | 200ms |
-| STT | 300ms |
-| LLM time-to-first-token | 400ms |
-| TTS first chunk | 200ms |
-| **First audio out** | **~1.15s** |
+Rewritten in A5 once real component costs were known (2026-08-05) - the original
+table below was a set of guesses made before any of this was measured, and the
+~1.15s total turned out to be physically unreachable (VAD's floor alone is 610ms,
+LLM TTFT's floor is another ~300ms - the two floors alone exceed the old total's
+budget for STT and TTS combined). Two stages are **structural floors**: fixed
+costs from a deliberate design decision or an external system, not moveable by
+anything on our side without reopening that decision. The rest are
+**controllable**, with a realistic target based on what's actually been measured,
+not what sounded reasonable in advance.
 
-Log every stage every turn. If one blows budget, fix that stage before adding features.
+| Stage | Type | Floor | Controllable target | Realistic target | Currently measured |
+|---|---|---|---|---|---|
+| Wake word detect | controllable | — | ~10ms | **~10ms** | 1.3-2.4ms median (OK) |
+| VAD endpoint | **fixed floor** | 610ms | none | **610ms** | 610.0ms median, both live sessions (exactly at floor) |
+| STT | controllable | — | ~350-400ms | **~375ms** | 313-538ms median |
+| LLM time-to-first-token | **floor + controllable** | ~300ms | +~50-150ms | **~350-450ms** | 681-811ms median (**gap not closed**) |
+| TTS engine synthesis (first chunk) | controllable | — | ~450-500ms | **~475ms** | ~510-540ms median (n=79 across two measurement methods) |
+| **First audio out (derived)** | | | | **~1.9s** | **~2.3s** |
+
+Why each floor is a floor, not a target to chase:
+- **VAD endpoint (610ms)**: `[audio.vad].min_silence_duration_ms=600` was deliberately
+  raised from 300ms after `scripts/vad_pause_test.py` measured real mid-sentence
+  hesitation gaps at 582-1822ms - every threshold in the 300-500ms range clipped
+  real speech identically. Backchannel prompting (`services/ears/backchannel*.py`)
+  is the accepted mitigation for the *cost* of this floor, not a way to shrink the
+  stage itself. Don't re-tune this value; that door is closed (see the A2/A3
+  entries above for the full investigation).
+- **LLM TTFT (~300ms of it)**: Ollama's own `load_duration` (now logged by
+  `client.py`) measured ~285-335ms on *every* call tested this session - warm or
+  cold, `/api/chat` or `/api/generate`. Not a cold-start signal despite the name;
+  a persistent per-call floor on this Ollama/model/GPU setup, confirmed not
+  reducible via endpoint choice (already the `/api/chat` vs `/api/generate`
+  question A1 and A5 both independently ruled out as noise). The controllable
+  remainder is `prompt_eval_duration` (context-size-dependent, measured 30-266ms
+  in isolated tests) - that part scales with conversation length and is worth
+  revisiting if/when A6's rolling-context summarization ships.
+
+The other three stages (STT, TTS engine synthesis, and the controllable slice of
+LLM TTFT) don't have an externally-imposed floor the way VAD and Ollama's
+load_duration do - "realistic target" there means "close to what's already
+measured for the current model/config choice," not a theoretical minimum. STT
+could go lower with a smaller Whisper model (`small` measured faster on one clean
+test in the VRAM investigation, see A3) but that's an accuracy trade-off never
+validated, not a free win. TTS engine synthesis hasn't had a dedicated
+optimization pass yet - DeepSpeed was checked and is blocked on a full CUDA
+Toolkit install this machine doesn't have (see A3's XTTS streaming work).
+
+**First audio out, properly derived**: the old table summed "LLM time-to-first-token"
+and "TTS first chunk" as if they were sequential, but they aren't - the old
+`ttfc_ms` was measured from `speak_stream()`'s entry (effectively the same moment
+the LLM call starts), so it already *contains* the LLM TTFT wait inside it, not
+adds to it. Summing both double-counted that wait. The corrected total is Wake +
+VAD + STT + LLM TTFT + **TTS engine synthesis only** (the genuinely TTS-specific
+cost, isolated via `tts.py`'s `synthesize_call` records and `latency_report.py`'s
+`_split_ttfc()` - see the A5 entries above): realistic ≈ 10 + 610 + 375 + 400 + 475
+= **~1.87s**. Current measured, same non-double-counting structure ≈ 2 + 610 + 425
++ 745 + 525 = **~2.3s**.
+
+**The honest picture**: ~1.9s is the real achievable floor on this hardware/model
+stack as currently chosen - not ~1.15s, which was never reachable once VAD's and
+Ollama's floors are accounted for. We're at ~2.3s, a ~400ms gap - and that gap
+maps almost entirely onto the LLM TTFT residual (681-811ms measured vs. a
+~350-450ms realistic target, roughly a ~330-360ms unexplained difference) that
+A5's diagnosis session didn't close (persona prompt, history growth, and
+endpoint choice were all ruled out; concurrent GPU load only accounts for
+~35-40ms of it). Closing that gap - not further work on any other stage - is what
+gets first-audio-out to the real floor. Log every stage every turn; re-run
+`scripts/latency_report.py` after a real live session (its `--since`/`--until`
+scope to one window, and it now reports Ollama's `load_duration_ms`/
+`prompt_eval_duration_ms` breakdown directly once real calls carry that data) to
+verify the ~1.9s floor is actually reachable once the TTFT gap is closed.
 
 ## Conventions
 

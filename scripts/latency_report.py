@@ -22,7 +22,12 @@ VOICE_LOG = ROOT / "logs" / "voice.jsonl"
 
 # (display name, target_ms or None if this stage predates/isn't in the original
 # CLAUDE.md budget table)
-FIRST_AUDIO_OUT_TARGET_MS = 1150
+# A5 (2026-08-05): 1150 was a pre-measurement guess and is now known unreachable -
+# VAD's floor (610ms, deliberate, see CLAUDE.md) and LLM TTFT's floor (~300ms,
+# Ollama's load_duration) alone exceed it before STT/TTS are even counted. 1870ms
+# is the realistic achievable total derived from real component floors/targets -
+# see CLAUDE.md's "Latency budget" section for the full derivation.
+FIRST_AUDIO_OUT_TARGET_MS = 1870
 
 
 def _read_jsonl(path: Path, since: datetime | None = None, until: datetime | None = None) -> list[dict]:
@@ -147,15 +152,24 @@ def main() -> None:
     verify_ms = _values(ears, "verify", "latency_ms")
     backchannel_ms = _values(ears, "backchannel", "latency_ms")
     ttft_ms = [r["ttft_ms"] for r in brain if r.get("ttft_ms") is not None]
+    load_duration_ms = [r["load_duration_ms"] for r in brain if r.get("load_duration_ms") is not None]
+    prompt_eval_ms = [r["prompt_eval_duration_ms"] for r in brain if r.get("prompt_eval_duration_ms") is not None]
     ttfc_ms = _values(voice, "ttfc", "ttfc_ms")
     wait_for_text_ms, engine_synth_ms = _split_ttfc(voice)
 
+    # "TTS first chunk" (ttfc_ms) is NOT included here - it's measured from
+    # speak_stream()'s entry, the same moment the LLM call starts, so it already
+    # *contains* the LLM TTFT wait rather than following it. Summing both would
+    # double-count that wait (A5, CLAUDE.md's "Latency budget" section has the
+    # full derivation). engine_synth_ms (this same ttfc_ms, minus the LLM-wait
+    # portion via synthesize_call's since_stream_start_ms) is the correct,
+    # non-overlapping additive TTS cost.
     critical_path = [
         ("Wake word detect", wake_ms, 50),
-        ("VAD endpoint", vad_ms, 200),
-        ("STT", stt_ms, 300),
-        ("LLM time-to-first-token", ttft_ms, 400),
-        ("TTS first chunk", ttfc_ms, 200),
+        ("VAD endpoint", vad_ms, 610),
+        ("STT", stt_ms, 375),
+        ("LLM time-to-first-token", ttft_ms, 450),
+        ("TTS engine synthesis (first chunk)", engine_synth_ms, 500),
     ]
 
     header = f"{'Stage':<38} {'n':>4} {'median':>9} {'p95':>9} {'max':>9} {'target':>9} {'status':>8}"
@@ -176,15 +190,28 @@ def main() -> None:
         print(f"{'First audio out (derived)':<38} insufficient data - no records yet for: {', '.join(missing)}")
 
     print()
-    print("'TTS first chunk' breakdown (A5): the row above is measured from speak_stream()'s")
-    print("entry, before any LLM token has arrived - for buffered_stream/hybrid/etc. it")
-    print("includes however long the trigger condition took the LLM to satisfy, not just")
-    print("real TTS engine latency. Split below via tts.py's synthesize_call records -")
-    print("rows with n=0 mean no post-fix log data in this window yet (nothing to derive it from).")
+    print("LLM TTFT breakdown (A5): Ollama's own server-side numbers, logged directly by")
+    print("client.py from the final chunk - not derived. load_duration_ms measured ~285-335ms")
+    print("on every call tested this session (warm or cold, chat or generate endpoint) - a")
+    print("persistent per-call floor on this Ollama/model/GPU setup, not a cold-start signal")
+    print("despite the field name. prompt_eval_duration_ms is the controllable, context-size-")
+    print("dependent remainder. ttft_ms above should be close to the sum of the two rows below.")
     print(header)
     print("-" * len(header))
+    _print_row("  load_duration (Ollama-reported floor)", _stats(load_duration_ms), None)
+    _print_row("  prompt_eval_duration (context-dependent)", _stats(prompt_eval_ms), None)
+
+    print()
+    print("Old 'TTS first chunk' number, for reference (A5): raw ttfc_ms is measured from")
+    print("speak_stream()'s entry, the same moment the LLM call starts - it's LLM-wait +")
+    print("engine synthesis combined, which is why it's no longer in the critical path above")
+    print("(it would double-count against LLM TTFT). 'waiting for LLM text' below is that")
+    print("LLM-wait portion in isolation - it should track LLM TTFT plus a small increment")
+    print("to finish generating sentence 1, not be summed separately into the total.")
+    print(header)
+    print("-" * len(header))
+    _print_row("  raw ttfc_ms (LLM-wait + engine synthesis, old number)", _stats(ttfc_ms), None)
     _print_row("  waiting for LLM text (first-chunk trigger)", _stats(wait_for_text_ms), None)
-    _print_row("  engine synthesis (first chunk, once triggered)", _stats(engine_synth_ms), None)
 
     print()
     print("New stages (not in the original CLAUDE.md budget table - added per PROMPTS.md A4):")
