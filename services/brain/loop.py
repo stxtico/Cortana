@@ -7,6 +7,10 @@ module just wires them together:
   verify -> VAD -> STT -> completeness -> backchannel/resume -> yield. This module
   only ever consumes its yielded utterances, never reimplements any of that.
 - config/persona.md is loaded verbatim as the system prompt.
+- services/memory/manager.py's MemoryManager (PROMPTS.md A6) owns conversation
+  state - profile.md injection, the rolling summary, retrieved fragments, and
+  the raw recent turns - in place of the unbounded plain-list history this
+  module used to resend whole every turn.
 - services/brain/client.py's stream() is the LLM call, unchanged.
 - services/voice/tts.py's speak_stream() already picks its synthesis strategy from
   [voice].strategy - this module just feeds it a token stream.
@@ -38,6 +42,9 @@ from pathlib import Path
 
 from services.brain import client as brain_client
 from services.ears import pipeline
+from services.memory import embeddings as memory_embeddings
+from services.memory import store as memory_store
+from services.memory.manager import MemoryManager
 from services.voice import tts as voice_tts
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -62,15 +69,20 @@ def _log(record: dict) -> None:
         f.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **record}) + "\n")
 
 
-async def _respond(user_text: str, history: list[dict]) -> None:
+async def _respond(user_text: str, persona: str, memory: MemoryManager) -> None:
     """Streams one conversational turn: brain tokens straight into speak_stream()
-    (rule 1 - never wait for the full response), history updated either way. The
-    user's line is recorded immediately so a later turn still has it even if this
-    response gets interrupted; the assistant's line is whatever was actually
-    generated before that happened, partial or complete - that's what really
-    happened in the conversation, not nothing."""
-    history.append({"role": "user", "content": user_text})
-    messages = list(history)
+    (rule 1 - never wait for the full response). Memory (PROMPTS.md A6) owns the
+    conversation state now, not a plain unbounded list - build_messages() folds
+    in profile.md, the live rolling summary, and retrieved fragments alongside
+    the raw recent turns, and records the user's line as soon as it's known so a
+    later turn still has it even if this response gets interrupted. The
+    assistant's line is whatever was actually generated before that happened,
+    partial or complete - that's what really happened in the conversation, not
+    nothing. Compression/summarization (memory.spawn_after_turn()) only fires
+    once speak_stream() has already returned, so it can never add latency to the
+    response the user is waiting on."""
+    retrieved = await memory.retrieve(user_text)
+    messages = memory.build_messages(persona, user_text, retrieved)
     assistant_chunks: list[str] = []
 
     async def _tokens():
@@ -82,7 +94,8 @@ async def _respond(user_text: str, history: list[dict]) -> None:
         await voice_tts.speak_stream(_tokens())
     finally:
         if assistant_chunks:
-            history.append({"role": "assistant", "content": "".join(assistant_chunks)})
+            memory.append_assistant("".join(assistant_chunks))
+        memory.spawn_after_turn()
 
 
 def _on_response_task_done(task: "asyncio.Task[None]") -> None:
@@ -106,9 +119,8 @@ def _on_response_task_done(task: "asyncio.Task[None]") -> None:
         _log({"stage": "response_task_done", "outcome": "ok"})
 
 
-async def run() -> None:
+async def run(memory: MemoryManager) -> None:
     persona = _load_persona()
-    history: list[dict] = [{"role": "system", "content": persona}] if persona else []
     response_task: asyncio.Task | None = None
     min_playback_s = _load_barge_in_config().get("min_playback_s", 0.3)
 
@@ -139,7 +151,7 @@ async def run() -> None:
                 print(f"(previous response errored: {exc!r})")
 
         print(f"> {user_text}")
-        response_task = asyncio.ensure_future(_respond(user_text, history))
+        response_task = asyncio.ensure_future(_respond(user_text, persona, memory))
         response_task.add_done_callback(_on_response_task_done)
 
     if response_task is not None:
@@ -152,11 +164,15 @@ async def run() -> None:
 
 
 async def _main() -> None:
+    memory = MemoryManager()
     try:
-        await run()
+        await run(memory)
     finally:
         voice_tts.close()
+        await memory.drain()
         await brain_client.aclose()
+        await memory_embeddings.aclose()
+        memory_store.close()
 
 
 if __name__ == "__main__":

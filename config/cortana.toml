@@ -10,6 +10,15 @@ heavy      = ""
 alt        = ""
 endpoint   = "http://localhost:11434"
 keep_alive = "30m"
+# Explicit num_ctx for every primary-model call (services/brain/client.py) - Ollama's
+# own unconfigured default measured 4096 live (`ollama ps`), and persona.md alone
+# already consumes 3295 of those tokens (measured via a real call's
+# prompt_eval_count) - leaving almost no room for profile.md, retrieved fragments,
+# or actual conversation before A6's rolling-context trigger would fire on every
+# single turn. Raised to 16384 - measured real VRAM cost of that jump (nvidia-smi,
+# e4b alone, same prompt): ~4096->32768 (8x) cost only ~475MB more resident, so
+# 16384 is cheap against the model's own 131072 max, not a VRAM risk.
+context_window = 16384
 
 [thinking]
 # Defaults only — services/brain/client.py takes `think` as a per-call argument,
@@ -241,3 +250,33 @@ min_playback_s = 0.3
 [latency]
 
 [memory]
+# PROMPTS.md A6/A7 - hand-rolled, not Letta (see PLAN.md's Phase 2 section for why:
+# Letta's default embedding path is cloud/OpenAI, its Ollama provider is real and
+# fully local, but installing the full `letta` server into this project's shared
+# venv silently downgrades onnxruntime 1.28.0->1.20.1 - openWakeWord's dependency,
+# already hand-tuned - plus protobuf and wrapt; and its core design is a MemGPT-
+# style agent that manages memory via its own LLM function-calls, adding per-turn
+# round trips this project's latency budget doesn't have room for. This project's
+# actual spec is three deterministic steps, not an autonomous agent.
+db_path                     = "memory_store/store.db"
+embedding_model             = "nomic-embed-text"   # local via Ollama, not cloud - see CLAUDE.md VRAM findings
+embedding_dim               = 768
+# Measured resident cost (nvidia-smi, real /api/embed call): ~572MB on top of the
+# full e4b+Whisper+XTTS stack, leaving ~1956MB free - comfortable. A resident fast
+# chat model (qwen2.5:1.5b) on top of *that* left only 585MB free - too thin given
+# this project's own prior finding that a similar margin (217MB, gemma4:12b) still
+# regressed a later call to a 6.1s reload. So: embedding model stays resident,
+# summarization does not - see rolling_summary_model below.
+embedding_keep_alive        = "30m"
+retrieval_top_k             = 8      # top 5-10 requested; 8 as a reasonable middle default
+rolling_fill_threshold      = 0.70   # fraction of [models].context_window that triggers compression
+rolling_chunk_messages      = 4      # oldest N raw messages folded into the summary per pass
+rolling_min_recent_messages = 4      # always left raw/uncompressed, even if fill is over threshold
+# No resident fast model fits alongside the current stack with real headroom (see
+# embedding_dim comment above) - summarization uses [models].primary instead, but
+# always fires as a background asyncio task after the turn's response has already
+# been spoken, never inline, so it can never add latency to the response the user
+# is waiting on. Real cost of this choice: if the user starts a new turn while a
+# summarization call is still in flight, Ollama serializes both calls to the same
+# model, so that next turn's TTFT absorbs the wait instead. Accepted for now -
+# summarization is one bounded-size call, not a repeating cost.

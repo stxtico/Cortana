@@ -373,9 +373,32 @@ like you're waiting on a machine.
 
 **Goal:** one continuous conversation that never resets.
 
-Use **Letta** rather than building this. It implements OS-style tiered context — active
-context as RAM, external storage as disk, with the agent managing its own memory through
-function calls. That is exactly the spec, already written.
+**Built hand-rolled (`services/memory/`), not on Letta - decided during A6, worth recording
+so this isn't re-litigated later.** The architecture call below was right: OS-style tiered
+context (profile as always-present RAM, rolling summarization, retrieval as disk) is
+exactly the right spec, and it's what got built. Letta specifically, the library, turned
+out to be a worse fit than it looked on paper:
+
+- **A real, if fixable, dependency conflict.** `letta` (the full server) has no torch/
+  transformers/numpy conflict with this project's pins in isolation, but installed into
+  the same shared venv as the rest of cortana it silently downgrades `onnxruntime`
+  1.28.0->1.20.1 (openWakeWord's dependency - the hand-tuned wake-word calibration sits on
+  top of this), plus `protobuf` and `wrapt`. Fixable by running Letta in its own isolated
+  venv and talking to it over HTTP via the thin `letta-client` package (3 packages, zero
+  conflicts) - but that's already a second service to run and operate, not a library import.
+- **The real disqualifier: shape, not dependencies.** Letta's core design is MemGPT-style -
+  the agent manages its own memory by making its own LLM function-calls (deciding when to
+  write core/archival memory, etc.), not "compute an embedding and store it." Routed
+  through its chat loop, that means extra LLM round-trips per turn on the same shared
+  Ollama/GPU budget A5 spent an entire session fighting to keep under 2.3s. The three-layer
+  spec below doesn't need an autonomous memory agent - it's three deterministic steps,
+  which is also the shape every other integration in this project has taken (no LangChain
+  in A8, a hand-rolled pitch tracker over librosa in A3, etc.).
+- Confirmed fully-local is achievable either way: Letta's Ollama provider proxies both chat
+  and embeddings through Ollama's OpenAI-compatible endpoint, no cloud key required. The
+  hand-rolled version does the same thing directly - `nomic-embed-text` via Ollama
+  (measured ~572MB resident, comfortable headroom) for embeddings, sqlite-vec for storage,
+  `[models].primary` for summarization.
 
 Three layers, all required:
 
@@ -386,7 +409,13 @@ Three layers, all required:
 3. **Retrieval** — vector store of everything ever said; pull the top 5-10 relevant
    fragments each turn based on recent messages.
 
-Use the fast 4B model for summarization so it doesn't block the main loop.
+Use the fast 4B model for summarization so it doesn't block the main loop. **Revised in
+A6**: no resident fast-tier model fit VRAM with real headroom (measured: embedding model
+alone leaves ~1956MB free, adding a resident fast chat model on top drops that to 585MB -
+too thin given this project's own prior finding that a similar margin regressed a later
+call to a multi-second reload). Summarization uses `[models].primary` instead, always as a
+background task fired after the turn's response has already been spoken - never inline,
+so it can never add latency to the response the user is waiting on.
 
 **Build a memory inspector in this phase, not later.** A simple CLI or page that lists
 what it has stored about you and lets you delete or correct entries. Memory systems record
@@ -394,7 +423,11 @@ offhand remarks as permanent facts, and six months of uncorrected drift is very 
 untangle after the fact.
 
 **Done when:** you can reference something from a conversation two weeks earlier and it
-surfaces correctly, and you can open a file and see why.
+surfaces correctly, and you can open a file and see why. Verified in A6 across a real
+process restart (two separate process invocations, not just a fresh in-process object) -
+correct recall of facts stated in the first process, sourced purely from disk storage in
+the second, confirmed via `scripts/memory.py` showing exactly which session and entry it
+came from.
 
 ---
 

@@ -20,6 +20,7 @@ CONFIG_PATH = ROOT / "config" / "cortana.toml"
 BRAIN_LOG_PATH = ROOT / "logs" / "brain.jsonl"
 
 _client: httpx.AsyncClient | None = None
+_last_stats: dict | None = None
 
 
 def _load_config() -> dict:
@@ -47,6 +48,14 @@ async def aclose() -> None:
         _client = None
 
 
+def last_call_stats() -> dict | None:
+    """Ollama's server-side stats (prompt_eval_count, etc.) from the most recent
+    stream() call. Doesn't change stream()'s AsyncIterator[str] contract - added
+    for A6's rolling-context trigger, which needs a real measured token count
+    (not an estimate) to compare against [models].context_window."""
+    return _last_stats
+
+
 def _log_call(record: dict) -> None:
     BRAIN_LOG_PATH.parent.mkdir(exist_ok=True)
     with BRAIN_LOG_PATH.open("a") as f:
@@ -71,6 +80,8 @@ async def stream(
         "think": think,
         "keep_alive": keep_alive,
     }
+    if models.get("context_window"):
+        payload["options"] = {"num_ctx": models["context_window"]}
     if tools:
         payload["tools"] = tools
 
@@ -120,7 +131,7 @@ async def stream(
     prompt_eval_count = final.get("prompt_eval_count") if final else None
     prompt_eval_duration_ms = round(final.get("prompt_eval_duration", 0) / 1e6, 1) if final else None
 
-    _log_call({
+    stats = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model": model,
         "think": think,
@@ -131,7 +142,10 @@ async def stream(
         "load_duration_ms": load_duration_ms,
         "prompt_eval_count": prompt_eval_count,
         "prompt_eval_duration_ms": prompt_eval_duration_ms,
-    })
+    }
+    global _last_stats
+    _last_stats = stats
+    _log_call(stats)
 
 
 async def _main() -> None:

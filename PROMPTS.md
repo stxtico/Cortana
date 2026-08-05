@@ -10,9 +10,9 @@ Don't skip ahead. Don't bundle two steps into one prompt.
 
 ## Progress (as of 2026-08-05)
 
-**Done:** A0, A1, A2, A3, A4, A5a (persona). A5b (latency) is partially done and
-deliberately paused.
-**Next:** A6 — Memory.
+**Done:** A0, A1, A2, A3, A4, A5a (persona), A6, A7 (memory). A5b (latency) is partially
+done and deliberately paused.
+**Next:** A8 — Agent loop and read-only tools.
 
 Two known limitations discovered during A5a, recorded so they aren't re-chased:
 
@@ -26,6 +26,12 @@ Two known limitations discovered during A5a, recorded so they aren't re-chased:
   recommend checking the feed lines." Same underlying behavior as the length creep and the
   editorializing closers — fixed twice under different names, regressed both times on new
   scenarios. Negative constraints don't hold well at this model scale. See A5a's last step.
+
+A6/A7 landed hand-rolled, not on Letta — PLAN.md's Phase 2 section has the full
+reasoning (a real shared-venv dependency conflict with openWakeWord's onnxruntime pin,
+and a deeper shape mismatch: Letta's MemGPT-style agent-managed memory adds per-turn LLM
+round trips this project's latency budget doesn't have room for). See CLAUDE.md's A6/A7
+entry for the implementation.
 
 ---
 
