@@ -10,9 +10,9 @@ Don't skip ahead. Don't bundle two steps into one prompt.
 
 ## Progress (as of 2026-08-05)
 
-**Done:** A0, A1, A2, A3, A4, A5a (persona), A6, A7 (memory). A5b (latency) is partially
-done and deliberately paused.
-**Next:** A8 — Agent loop and read-only tools.
+**Done:** A0, A1, A2, A3, A4, A5a (persona), A6, A7 (memory), A8 (agent loop + tools,
+web_search deferred - see below). A5b (latency) is partially done and deliberately paused.
+**Next:** A9 — Write tools with confirmation gates.
 
 Two known limitations discovered during A5a, recorded so they aren't re-chased:
 
@@ -32,6 +32,21 @@ reasoning (a real shared-venv dependency conflict with openWakeWord's onnxruntim
 and a deeper shape mismatch: Letta's MemGPT-style agent-managed memory adds per-turn LLM
 round trips this project's latency budget doesn't have room for). See CLAUDE.md's A6/A7
 entry for the implementation.
+
+**A8's original done-when ("what's the weather in Miami" triggers a search and she
+answers from it) is not met — deliberate infrastructure deferral, not a broken build.**
+No Docker on this machine, so neither web_search backend is actually reachable:
+Tavily needs an API key (chose not to depend on an external service/key at all,
+picked SearXNG instead for zero external calls), and self-hosting SearXNG needs
+Docker (or bare WSL2 install, more setup than wanted right now). `tools/web_search.py`
+is fully built, both backends (`tools/_search_tavily.py`, `tools/_search_searxng.py`)
+implemented and unit-tested — it's just not offered to the model until one actually
+responds (`services/brain/agent.py` checks `web_search.is_available()` live, every
+call, no restart needed once a backend exists). Revised done-when for A8, agreed as
+arguably the better test anyway (multi-step, real whitelisted directory, no external
+dependency so a failure means the loop is broken rather than the network): "read the
+config file and tell me what the wake threshold is" — verified, see CLAUDE.md's A8
+entry for what it took to get reliable (not the first thing tried).
 
 ---
 

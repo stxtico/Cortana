@@ -28,6 +28,16 @@ context_window = 16384
 conversational = false   # voice loop (A1-A5) — never wait on hidden reasoning
 cad            = true    # A14 CAD generation and verification loop
 heavy          = true    # B3 heavy-tier reasoning mode
+# A8's agent loop (services/brain/agent.py): measured, not assumed - with
+# think=false, 5 real runs of "read the config file and tell me what the wake
+# threshold is" produced only 2/5 correct tool-call chains (the rest narrated
+# intent without calling a tool, stalled after a partial chain, or once
+# hallucinated a filename - config/settings.txt - that didn't even appear in
+# its own list_dir result). Same test with think=true: 5/5 correct tool calls,
+# 5/5 correct final answers. Cost is real (~1.2-3.5s per call vs ~0.8-1.7s,
+# each turn makes 2-3 calls) but agent.py isn't wired into the low-latency
+# voice loop yet - worth revisiting if/when it is.
+agent          = true
 
 [audio]
 sample_rate = 16000
@@ -280,3 +290,32 @@ rolling_min_recent_messages = 4      # always left raw/uncompressed, even if fil
 # summarization call is still in flight, Ollama serializes both calls to the same
 # model, so that next turn's TTFT absorbs the wait instead. Accepted for now -
 # summarization is one bounded-size call, not a repeating cost.
+
+[tools]
+# PROMPTS.md A8 - read-only tools, dispatched from services/brain/agent.py.
+# read_file/list_dir are scoped to exactly these directories (relative to the
+# project root, resolved + checked against path traversal in tools/_fs.py) -
+# add your own real working directories (CAD projects, etc.) here as needed.
+whitelist_dirs = ["config", "logs", "cad"]
+# Cap on any single tool result folded back into the conversation. A fetched
+# page can be thousands of tokens; [models].context_window is 16384 and
+# persona.md alone already measures 3295 real tokens (see [memory]'s comment
+# above) - an uncapped fetch_url could singlehandedly trip A6's rolling-context
+# compression, or worse, blow past the window in one call. 3000 chars is
+# roughly 750 tokens - generous for a search-result summary or a file excerpt,
+# nowhere near enough to threaten the budget on its own. Applied uniformly in
+# agent.py's dispatcher, not per-tool, so every tool (including future ones)
+# gets it automatically.
+max_result_chars = 3000
+
+[tools.web_search]
+# "tavily" (needs TAVILY_API_KEY in .env - see .env.example) or "searxng"
+# (self-hosted, zero external calls/keys - point searxng_endpoint at a real
+# instance with JSON output enabled). Same config-driven backend-swap pattern
+# as [voice].engine in services/voice/tts.py - switching later is a config
+# change, not a rewrite. tools/_search_tavily.py and tools/_search_searxng.py
+# implement the same search(query, max_results) -> list[dict] interface
+# underneath tools/web_search.py.
+backend           = "searxng"
+max_results       = 5
+searxng_endpoint  = "http://localhost:8080"

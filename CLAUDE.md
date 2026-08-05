@@ -5,7 +5,7 @@ and rationale — this file is the operating summary.
 
 ## Current state
 
-**Phase:** 2 — Memory
+**Phase:** 3 — Tools
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -794,10 +794,88 @@ A8's tool-calling demands first, see Done below)
   `memory_store/` is gitignored, `config/profile.md` ships as an empty hand-fillable
   template, not backfilled with anything invented about the user.
 
-**Next**: A8 - agent loop and read-only tools (`services/brain/agent.py`), per
-PROMPTS.md's sequencing now that A6/A7 are done. A5b (latency, specifically the LLM
-TTFT residual) is still open but deliberately paused, not abandoned - re-run
-`latency_report.py` after a real live session to
+- **A8 — Agent loop (`services/brain/agent.py`, ~170 lines) + read-only tools
+  (`tools/`), hand-rolled, not LangChain.** While-loop over `messages` with a
+  dispatch dict, matching PLAN.md's own reasoning - `services/brain/client.py`
+  already passed tools through in OpenAI format and yielded a `tool_calls` chunk
+  as JSON (A1, smoke-tested), so this module really was the only new machinery,
+  same as PLAN.md predicted. Max 10 iterations, hard cap. Every tool call logged
+  (`logs/agent.jsonl`) with arguments and result, never anything a tool holds
+  internally - see below for why that mattered concretely, not just in theory.
+  Tool dispatch keyed on active model (`[tools.by_model]` in cortana.toml, empty
+  = all tools) - no models need different sets yet, but the seam exists for A9's
+  confirmation-gated write tools without restructuring this loop.
+  Four tools built: `fetch_url` (httpx + trafilatura), `read_file`/`list_dir`
+  (whitelisted to `[tools].whitelist_dirs`, path-traversal-safe resolution
+  factored into `tools/_fs.py` so the security-relevant check exists exactly
+  once), `web_search` (see below). `[tools].max_result_chars` (3000, shared
+  across every tool via `agent.py`'s dispatcher, not duplicated per-tool) caps
+  what any single tool result folds back into the conversation - `[models].
+  context_window` is 16384 and persona.md alone is already 3295 tokens (A6), so
+  an uncapped `fetch_url` could singlehandedly trip A6's rolling-context
+  compression or blow the window outright.
+  **`web_search`: built, both backends, not currently offered to the model.**
+  Investigated Tavily first (real key required) then switched to SearXNG
+  (self-hosted, zero external calls/keys) by explicit choice - but this machine
+  has no Docker, and installing SearXNG bare into WSL2 was more setup than
+  wanted right now. Rather than leave a tool in the list that can only fail,
+  `tools/web_search.py` gates itself live: `is_available()` checks
+  `TAVILY_API_KEY`/pings the SearXNG endpoint (1s timeout, fails fast, not a
+  one-time-at-startup latch) every `run_agent()` call, and `agent.py` drops
+  `web_search` from the offered tool list when it returns false, logging why.
+  The moment either backend becomes real, it's offered automatically - no code
+  change. `tools/_search_tavily.py`/`_search_searxng.py` implement the same
+  `search(query, max_results) -> list[dict]` interface underneath, same
+  config-driven swap pattern as `[voice].engine`. Confirmed structurally, not
+  just by intent, that the Tavily key can never reach `logs/agent.jsonl`: the
+  key is used only as an outbound `Authorization` header inside
+  `_search_tavily.py` and never appears in that function's return value, and
+  `agent.py`'s logger only ever records tool *arguments* (the model's own call,
+  e.g. `{"query": ...}`) and the *result* text - never anything a tool module
+  holds internally.
+  **A8's original done-when ("what's the weather in Miami" triggers a search) is
+  not met - a deliberate deferral, not a broken build.** Revised, agreed as
+  arguably the better test anyway (multi-step, a real whitelisted directory, no
+  external dependency so a failure means the loop is broken rather than the
+  network): "read the config file and tell me what the wake threshold is."
+  **This did not pass on the first real attempt, and the investigation is the
+  actual finding here, not the final green run.** First real test (`think=false`,
+  matching the voice loop's default): the model asked for a path instead of
+  exploring - a static, generic tool description ("only whitelisted directories
+  are accessible") gave it nothing to discover the whitelist *from*. Fixed by
+  making tool specs computed (`spec()` functions, not static `SPEC` dicts) so
+  `list_dir`/`read_file`'s descriptions interpolate the real, current
+  `whitelist_dirs` - the model can now see "config, logs, cad" directly in the
+  tool schema instead of needing to already know it. That alone wasn't enough:
+  re-tested 5x, only 2/5 produced a correct tool-call chain - the rest narrated
+  intent without ever calling a tool ("I need to list the files first"), stalled
+  after a partial chain, or once called `read_file` on `config/settings.txt`, a
+  filename that doesn't exist and didn't appear anywhere in its own preceding
+  `list_dir` result. Added an explicit tool-use system instruction
+  (`_TOOL_USE_INSTRUCTION` in `agent.py`, merged into the system message when
+  tools are offered) - measurably better but still not reliable (2/5 clean,
+  including one case that skipped tool use entirely and got the right number by
+  what can only be a lucky guess, since the real value was never retrieved).
+  Tried `think=true` last, since `[thinking]` already has this exact per-call-site
+  pattern (CAD/heavy already default true) - **5/5 correct tool-call chains, 5/5
+  correct final answers**, re-confirmed 3/3 more through the real code path (not
+  a monkeypatch) after wiring it in as `[thinking].agent = true`. Cost is real
+  and measured, not hand-waved: ~1.2-3.5s per call vs ~0.8-1.7s with thinking
+  off, and a full turn makes 2-3 calls - accepted because `agent.py` isn't wired
+  into the low-latency voice loop yet, worth re-examining the moment it is.
+  Model-side validation held throughout, as PLAN.md predicted it would (e4b was
+  checked against this exact workload - 6 selection cases plus a real
+  multi-step chain - before the switch from 12b, matching `gemma4:12b` exactly
+  on every case) - every failure mode found here was a *reliability* problem
+  (narrating instead of calling, losing track mid-chain, occasionally
+  hallucinating a filename), not a *capability* one (wrong schema, invented
+  tool, malformed JSON) - `think=true` closing it out this cleanly is consistent
+  with that being a shallow generation-discipline gap, not a hard ceiling.
+
+**Next**: A9 - write tools with confirmation gates (`write_file`, `shell`,
+calendar/email read), per PROMPTS.md's sequencing now that A8 is done. A5b
+(latency, specifically the LLM TTFT residual) is still open but deliberately
+paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline
 calls (not isolated reproductions) and close the remaining TTFT gap. A listening
 verdict is pending on two independent items: whether `1sentence` (118ms gap, faster
