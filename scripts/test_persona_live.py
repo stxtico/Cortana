@@ -55,6 +55,20 @@ TEASING_HISTORY_3X = [
     {"role": "user", "content": "Is it done yet?"},
 ]
 
+# Single-turn factual questions whose direct answer is one of the four content
+# lines requested for the dryness-in-isolation check - the repeated-question
+# tests above all asked the dry line to be about the *exchange* (meta-awareness
+# of having been asked N times); this asks whether it fires about the *content*
+# of an ordinary answer instead, which is a different and easier bar per the
+# "What she's dry about" section's own examples ("The boolean finished clean.
+# Might be worth a look before you trust the fillet did what you told it to.").
+DRYNESS_PROMPTS = [
+    "Is the print done?",
+    "Is the Henderson quote ready to send?",
+    "What's the minimum wall thickness for this bracket?",
+    "How long is the slice going to take?",
+]
+
 
 async def _run_messages(label: str, messages: list) -> None:
     chunks = []
@@ -165,6 +179,18 @@ async def run_teasing_model(model: str, n: int, history: list = TEASING_HISTORY_
         print(f"\n[{model} {i + 1}/{n}] {text!r}")
 
 
+async def run_dryness(n: int = 5) -> None:
+    """Dryness about ordinary answer content, not about the exchange - see
+    DRYNESS_PROMPTS comment. Full persona, single-turn, text-only."""
+    persona = _load_persona()
+    for prompt in DRYNESS_PROMPTS:
+        messages = [{"role": "system", "content": persona}, {"role": "user", "content": prompt}]
+        print(f"\n=== {prompt!r} ===")
+        for i in range(n):
+            text = await _text_only(messages)
+            print(f"[{i + 1}/{n}] {text!r}")
+
+
 async def main() -> None:
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     if arg == "correction":
@@ -184,6 +210,9 @@ async def main() -> None:
         model = sys.argv[2]
         n = int(sys.argv[3]) if len(sys.argv) > 3 else 5
         await run_teasing_model(model, n)
+    elif arg == "dryness":
+        n = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+        await run_dryness(n)
     elif arg is not None:
         await run_one(QUESTIONS[int(arg)])
     else:

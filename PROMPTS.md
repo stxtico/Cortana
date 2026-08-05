@@ -8,6 +8,25 @@ commit, update `CLAUDE.md`, move on.
 
 Don't skip ahead. Don't bundle two steps into one prompt.
 
+## Progress (as of 2026-08-05)
+
+**Done:** A0, A1, A2, A3, A4, A5a (persona). A5b (latency) is partially done and
+deliberately paused.
+**Next:** A6 — Memory.
+
+Two known limitations discovered during A5a, recorded so they aren't re-chased:
+
+- **Dry wit doesn't fire.** 45 samples across nine conditions — full persona, stripped
+  persona, positive examples in the shape rules, exact scenario matching, and `gemma4:12b`
+  instead of `e4b`. Zero firings in every condition. Prompt structure and model size are
+  both ruled out; this is a capability limit at this model scale. Don't re-litigate it
+  without a genuinely new approach (few-shot of the exact transformation, sampling several
+  candidates and picking, or a larger model on the Spark).
+- **She pads answers with unrequested advice.** "You should check for warpage," "I
+  recommend checking the feed lines." Same underlying behavior as the length creep and the
+  editorializing closers — fixed twice under different names, regressed both times on new
+  scenarios. Negative constraints don't hold well at this model scale. See A5a's last step.
+
 ---
 
 # TRACK A — Build now (3080 Ti, 12GB)
@@ -142,6 +161,88 @@ predicting which good clip clones well:
 **Done when:** she speaks in the target voice, audio starts before generation finishes,
 and you have XTTS vs. Kokoro latency numbers side by side.
 
+### Step 4 — Pauses: make being wrong cheap (do before A4)
+
+Endpoint detection starts at 322ms — `min_silence_duration_ms` (300) + `speech_pad_ms`
+(30). Measured against real speech, natural hesitation gaps ran **582–1822ms**, so no
+value in the 300–500ms range makes any difference at all: every real pause blows past all
+of them.
+
+That kills the obvious approach. A threshold high enough to never clip a thinking pause
+(~2s) would tax *every* interaction with two seconds of silence before she responds. A
+threshold low enough to feel responsive will interrupt you.
+
+**So stop trying to get the threshold right. Make guessing wrong cheap instead.**
+
+#### The backchannel
+
+When she thinks you've stopped but the thought looks unfinished, she prompts instead of
+answering: *"and…?"*, *"go on"*, *"you were saying?"*
+
+That converts the failure mode from *interrupts and answers the wrong thing* — which
+derails you — into *gently prompts you to continue*, which costs you nothing. You keep
+talking, she stops. It also handles the case a threshold never could: when you genuinely
+finished but trailed off ambiguously.
+
+With this in place the threshold stops being critical. Set it around 600-800ms and let the
+backchannel absorb the errors.
+
+> Build backchannel prompting in `services/ears/`:
+>
+> 1. On endpoint, run the partial transcript through the fast model: does this look like a
+>    finished thought or an abandoned one? Cheap call, ~100ms.
+> 2. If abandoned, play a short backchannel instead of passing the utterance to the brain.
+>    **She writes her own** — a background job during idle time generates fresh
+>    backchannel lines in her voice and pre-renders the TTS into a pool. Pre-rendering is
+>    non-negotiable here: a prompt arriving 800ms after I trail off has already missed its
+>    moment. Lines expire on use, never repeat within a session, pool regenerates when it
+>    runs low. Same architecture as the camera-cover reactions.
+>    Keep them genuinely short — "and?", "go on", "you were saying?" — length is the point,
+>    not variety for its own sake.
+> 3. If I resume within a few seconds, append to the previous utterance rather than
+>    starting fresh, so the whole thought arrives intact.
+> 4. Rate-limit hard, and escalate patience: after one unanswered prompt, wait
+>    substantially longer before the next. Twice is attentive; five times is nagging.
+>
+> Raise `min_silence_duration_ms` to 600ms as the new default, since the backchannel now
+> covers the error case.
+
+#### What not to build
+
+**Don't have her predict what you were going to say and say it.** Completing someone's
+sentence is the most irritating thing a conversational system can do — when it's wrong it
+doesn't just fail to help, it derails the thought you were having. A 12B model working
+from a partial sentence will be wrong often.
+
+The useful half without the annoying half: let her predict *internally* to judge whether
+the thought looks complete, and never speak the prediction. That's already step 1 above —
+prediction as a signal, not as speech. Keep it that way.
+
+**Done when:** you trail off mid-sentence, she says "and?" instead of answering, and
+picking the sentence back up produces one complete utterance rather than two fragments.
+
+#### Later refinement: per-context voice references
+
+XTTS caches speaker latents, and swapping them costs ~30ms — so different situations can
+use different reference clips from the same voice. Backchannels want a quieter, softer
+reference than her main responses; the prep run produced 387 candidate segments and only
+one is in use.
+
+That's the real lever on how she sounds. Two others, in order of value:
+
+- **Better reference clips.** If a specific word or phrase consistently sounds wrong, the
+  fix is a reference containing that phoneme pattern cleanly — not tuning.
+- **Pronunciation overrides.** For names and technical terms she mangles ("Aiden", CAD
+  jargon, model names), a pronunciation dictionary. Not a model problem.
+
+**What not to build: a voice that "improves itself" from its own output.** XTTS is
+inference against a fixed model — it isn't learning as it runs. Making it self-improve
+would mean fine-tuning on its own generations, which are by definition lower quality than
+its training data. The voice drifts *away* from the reference, artifacts compound, and the
+degradation is slow enough that you won't notice until it's badly wrong. There's also no
+feedback signal here: unlike the reactive lines (where laughter tells you what landed),
+nothing tells you whether a rendering sounded good.
+
 ---
 
 ## A4 — Close the loop
@@ -161,17 +262,115 @@ and you have XTTS vs. Kokoro latency numbers side by side.
 **Done when:** three conversational turns in a row without it feeling like waiting on a
 machine. Run the latency report and note which stages miss budget.
 
+### What this actually found
+
+Four real bugs, all from the first live pass — worth expecting rather than being surprised
+by:
+
+1. **The barge-in hook over-fired.** Cancelling on *every* wake trigger includes the wake
+   that starts the next turn, silently killing responses mid-generation. Gate it on
+   playback having actually started, not on a response task merely existing.
+2. **A failing response task died silently.** If nothing `await`s it, asyncio logs the
+   exception at GC time and you see nothing. `task.add_done_callback` logging every
+   outcome is what made the rest of A4 diagnosable at all — add it before you need it.
+3. **`stream.abort()` doesn't preempt a blocking `write()`.** A hung audio thread survived
+   cancellation and crashed the process at interpreter shutdown. Write in ~100ms
+   sub-blocks so cancellation has real checkpoints.
+4. **Concurrent XTTS calls corrupt shared model state.** A pool refill overlapping a real
+   response produced a negative position index and a fatal CUDA assert — `cached_prefix_emb`
+   is shared mutable state. Serialize every call touching the model behind one lock.
+
+The last one presented as random, intermittent CUDA crashes. It was diagnosed by patching
+`nn.Embedding` to bounds-check on the CPU side, turning a fatal assert into a catchable
+Python exception. Worth remembering as a technique.
+
 ---
 
-## A5 — Latency tuning
+## A5a — Persona
+
+The character brief. Do this *after* A4, once you've heard her respond to something real —
+the generic version is what makes it obvious what to write.
+
+> Build `config/persona.md` from `config/persona_reference.md` (character brief — source
+> material to rewrite from, do NOT load it into the system prompt) plus `PLAN.md`'s
+> "Persona & reactive moments" section.
+>
+> Formula: **useful information + confident observation + subtle sarcasm or emotion.**
+> Information first, personality second.
+>
+> Structure it with: how she handles being wrong; how she disagrees with me; what she's dry
+> about vs. what she takes seriously; verbal rhythm; and 8-10 sample lines in contexts that
+> actually occur — CAD, printing, calendar, files, the business. Not game contexts.
+>
+> Weight toward the registers that actually fire — calm information is most of it. Keep the
+> vulnerable register rare.
+>
+> Then run real questions through the live persona so I can hear it.
+
+### Four fixes that came out of testing it
+
+Each of these was a real failure found by running live questions, not a hypothetical:
+
+1. **Pushback fabricated specifics.** She invented "requires a minimum of 1.2mm for the
+   infill density" — confident, precise, made up. The brief taught the pushback *shape*,
+   and with no tools to check anything she filled it with invented numbers. Fix: grounds
+   means something she can verify *right now*. Without a tool, she states a suspicion and
+   asks the question that would settle it. A confident wrong number is worse than no
+   pushback.
+2. **Response-shape rules got buried** as the brief grew. Move them to the very top,
+   before any character material.
+3. **She disputed a correct correction.** Told "PLA prints at 220, not 210," she countered
+   with 215 — the disagreement trait overriding the being-wrong trait, plus another
+   invented number. Fix: write the precedence explicitly. Disagreement is for what I'm
+   about to *do*, not for corrections of her own claims.
+4. **Editorializing closers.** "Hopefully that keeps things moving smoothly." Fix: she ends
+   on the last piece of actual information. No summarizing closer, no reassurance.
+
+### The ongoing part
+
+Persona is never finished. When a response makes you wince, paste it into `persona.md` with
+what she should have said instead. Those before/after pairs beat anything written in
+advance.
+
+**Done when:** she sounds like a specific character rather than a stock assistant, and the
+response-shape rules hold across several different question types.
+
+---
+
+## A5b — Latency tuning
 
 > Here's my latency report: [paste output].
 >
 > Work through the stages that miss budget, biggest gap first. For each: diagnose, propose
 > the fix, implement, re-measure. Don't add any features during this step.
 
-**Done when:** first audio out is consistently under ~1.5s. This step may take several
-sessions. It is the most important one in Track A.
+### What this actually found
+
+**Rewrite the budget before optimizing against it.** The original targets were guesses made
+before anything was measured, and the ~1.15s total turned out to be physically unreachable.
+Two stages are structural floors, not tunable:
+
+- **VAD endpoint, 610ms** — `min_silence_duration_ms=600`, chosen deliberately after
+  measuring real hesitation gaps at 582-1822ms. Backchannel prompting covers the cost. That
+  door is closed.
+- **Ollama's `load_duration`, ~300ms** — measured on *every* call, warm or cold, both
+  endpoints. Not a cold-start signal despite the name. A fixed per-call floor on this
+  setup.
+
+**Watch for double-counting.** `ttfc_ms` is measured from `speak_stream()`'s entry — the
+same moment the LLM call starts — so it already *contains* the TTFT wait. Summing both
+inflates every total. Use engine-synthesis-only in the derived number.
+
+**Real numbers:** achievable floor ~1.9s, currently ~2.3s. The whole remaining gap is one
+stage (LLM TTFT residual), which resisted a full diagnosis session — persona prompt,
+history growth, endpoint choice, and GPU contention were all ruled out.
+
+**Paused deliberately.** ~400ms from a stubborn stage is a poor trade against building
+features. Revisit when it annoys you.
+
+**Done when:** you've rewritten the budget against real component costs and closed the gaps
+worth closing. Not when every stage hits a number invented before you knew what things
+cost.
 
 ---
 
