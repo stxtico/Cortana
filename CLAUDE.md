@@ -636,14 +636,78 @@ A8's tool-calling demands first, see Done below)
   but the numbers say clearly why A5 (latency tuning) is next, not optional
   polish.
 
-**Next**: A5 (latency tuning) - every stage but wake word detect is over budget,
-TTS first chunk is the biggest single gap (1.4-2.8s vs. 200ms). Pending, not yet
-acted on: a listening verdict on whether the length-correlated pacing anomaly
-above (`voice_refs/audition/chunk_length_accent/`) is the source of the reported
-accent drift; if confirmed, extending `backchannel_pool.py`'s duration-sanity
-retry to the main response path is the likely fix, not yet built since it wasn't
-this session's call to make unilaterally. `°C`/`F` and mixed-alnum unit
-normalization gaps noted above, not yet fixed.
+- **A5 in progress — TTS first chunk tightened, LLM TTFT diagnosed (not yet fixed).**
+  `_consume_buffered_start`'s trigger loosened from 2-sentences-or-300-chars to
+  1-sentence-or-150-chars (`_BUFFERED_START_CHAR_THRESHOLD` = 150) - NOT a repeat
+  of A3's hybrid trade-off, since buffered_stream always fires its remainder as
+  its own separate `inference_stream()` call regardless of the first-chunk
+  trigger (hybrid's 3.6s gap came from waiting for the *entire rest of the
+  response* as one call - a different failure mode this doesn't reopen).
+  Measured on a real `speak_stream()` run (`scripts/compare_buffered_triggers.py`):
+  572ms -> 394ms TTFA, same 0ms max gap. 1-sentence-alone (no char fallback)
+  measured faster still (301ms) but reintroduced a small real gap (118ms) - built
+  and saved (`voice_refs/audition/buffered_trigger_comparison/`) but not landed,
+  pending a listening call on whether that gap is audible. Verified the landed
+  change against a real production `speak_stream()` call after committing: first
+  chunk correctly triggers on exactly one sentence, remainder streams at 0ms gap
+  throughout.
+  Separately confirmed, directly measured: the persona's short-first-sentence
+  rule (originally justified by playback pipelining, A3) also cuts buffered_stream's
+  trigger latency in its own right - same sentence 2, only sentence 1 length
+  varied: a 7-char opener triggered at 237ms vs. 513ms for a 90-char opener. A
+  second, independent reason to keep enforcing that rule, not just the original one.
+  `latency_report.py` now splits "TTS first chunk" into "waiting for LLM text"
+  and "engine synthesis" via `tts.py`'s new `synthesize_call` log records
+  (`since_stream_start_ms`) - the old single number was conflating LLM generation
+  pacing (buffered_stream waiting for its trigger condition) with actual TTS
+  engine latency; diagnosed directly that ~1.5s of a typical 1.4-2.8s `ttfc_ms`
+  was the former, not the latter.
+  LLM TTFT (681-811ms live vs. bench.py's 382ms at 1K context, now the largest
+  remaining gap) - real findings, not fully closed:
+  - **Ruled out**: unbounded conversation history (real, `loop.py`'s `history`
+    list never truncates or summarizes and every turn resends it whole - A6's
+    "rolling context" isn't built yet - but TTFT measured *flat* across 5 real
+    turns in both live-test windows, 656-811ms with no growth trend, so this
+    isn't the live-vs-bench driver at session lengths tested so far). Persona
+    system prompt alone (isolated test with the full persona + one user message:
+    350-430ms, not 650+). Endpoint choice, `/api/chat` vs. `/api/generate` (both
+    ~300-430ms in matched isolated tests - reconfirms A1's earlier "noise" finding
+    independently).
+  - **New finding, real and actionable**: Ollama's own `load_duration` field
+    (now logged - `client.py`'s `_log_call` records `load_duration_ms`/
+    `prompt_eval_count`/`prompt_eval_duration_ms` from the final chunk) is
+    *not* a cold-start-only signal - it measured ~285-335ms on every single
+    call tested, warm or cold, chat or generate endpoint. `ttft_ms` (client-
+    measured) matches `load_duration_ms + prompt_eval_duration_ms` (Ollama-
+    reported) to within ~25ms consistently. This means roughly 300ms of *any*
+    call's TTFT, including bench.py's own 382ms baseline, is a fixed Ollama-side
+    floor - not something reducible from our side without a different Ollama
+    version/model/GPU-scheduling setup.
+  - **Real but modest**: concurrent XTTS synthesis (matching a backchannel-pool
+    refill or overlapping turn) adds ~35-40ms to TTFT directly (323-343ms ->
+    376-383ms, isolated test) but roughly *halves* generation throughput
+    (~124 tok/s -> ~58 tok/s) - a bigger hit to total response duration than to
+    time-to-first-token specifically.
+  - **Not fully closed**: combining persona + realistic 5-turn history +
+    concurrent GPU load in one isolated test reached 395-587ms - closer to the
+    live 650-811ms range but still short of it. The remaining gap wasn't
+    pinned down this session (real conversation history is likely longer/more
+    varied than the synthetic 5-turn test, and the full live pipeline runs more
+    concurrent CPU/GPU activity - wake word, VAD, STT, backchannel pool - than
+    any isolated reproduction captured). `client.py`'s new logging means the
+    *next* real live session will show the real `load_duration`/`prompt_eval_duration`
+    breakdown directly instead of requiring more reproduction guesswork.
+
+**Next**: A5 continues - re-run `latency_report.py` after a real live session to
+get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline
+calls (not isolated reproductions) and close the remaining TTFT gap. A listening
+verdict is pending on two independent items: whether `1sentence` (118ms gap, faster
+than the landed `1sentence_or_150chars`) is worth it, and whether the
+length-correlated pacing anomaly (`voice_refs/audition/chunk_length_accent/`) is
+the source of the reported accent drift - if confirmed, extending
+`backchannel_pool.py`'s duration-sanity retry to the main response path is the
+likely fix, not yet built since it wasn't this session's call to make unilaterally.
+`°C`/`F` and mixed-alnum unit normalization gaps noted above, not yet fixed.
 
 ## Architecture
 

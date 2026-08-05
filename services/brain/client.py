@@ -107,6 +107,19 @@ async def stream(
     eval_duration_s = (final.get("eval_duration", 0) / 1e9) if final else 0
     tokens_per_sec = round(eval_count / eval_duration_s, 2) if eval_duration_s > 0 else 0.0
 
+    # Ollama's own server-side breakdown (A5: client-measured ttft_ms was ~2x
+    # bench.py's number in live use and no client-side reproduction - persona
+    # system prompt, accumulated history, concurrent GPU load from XTTS/Whisper -
+    # closed the gap. These are the authoritative numbers instead of guessing:
+    # load_duration > 0 means Ollama (re)loaded the model this call (cold start,
+    # e.g. a keep_alive eviction), prompt_eval_duration is real context-processing
+    # time (scales with prompt length, distinct from model load), eval_duration
+    # is generation time. ttft_ms above is measured client-side and includes
+    # network/httpx overhead on top of these; comparing the two isolates that.
+    load_duration_ms = round(final.get("load_duration", 0) / 1e6, 1) if final else None
+    prompt_eval_count = final.get("prompt_eval_count") if final else None
+    prompt_eval_duration_ms = round(final.get("prompt_eval_duration", 0) / 1e6, 1) if final else None
+
     _log_call({
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model": model,
@@ -115,6 +128,9 @@ async def stream(
         "duration_s": duration_s,
         "tokens": eval_count,
         "tokens_per_sec": tokens_per_sec,
+        "load_duration_ms": load_duration_ms,
+        "prompt_eval_count": prompt_eval_count,
+        "prompt_eval_duration_ms": prompt_eval_duration_ms,
     })
 
 
