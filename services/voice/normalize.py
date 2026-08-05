@@ -15,18 +15,28 @@ Acronyms: XTTS reads an unspaced all-caps run as if it were a mispronounced regu
 word, not letters - "PLA" came out as "player.a", "STL" dropped letters entirely.
 Verified by transcribing (rule 6, CLAUDE.md), not just listening: spacing the
 letters with periods ("P. L. A.") reliably transcribed back to the clean acronym,
-while bare spaces between letters ("P L A") still garbled ("PLAware"). A small
-exception list (_WORD_ACRONYMS) covers the ones actually pronounced as a single
-word - confirmed "NASA" transcribes correctly read as a word. PETG looked like it
-might belong on that list too but tested badly wrong both alone ("Try PETG
-instead." -> "Try PG instead.") and next to PLA in one sentence (-> "Pele prints
-easier than peachy.") - it's letter-spelled like everything else not on the list,
-not an exception.
+while bare spaces between letters ("P L A") still garbled ("PLAware"). An
+exception list (`[voice.normalize].word_acronyms` in cortana.toml, not hardcoded
+here - it's expected to grow and shouldn't need a code change to do it) covers
+the ones actually pronounced as a single word - confirmed "NASA" transcribes
+correctly read as a word. PETG looked like it might belong on that list too but
+tested badly wrong both alone ("Try PETG instead." -> "Try PG instead.") and next
+to PLA in one sentence (-> "Pele prints easier than peachy.") - it's
+letter-spelled like everything else not on the list, not an exception. Same
+scrutiny applies to every entry in the config list - see cortana.toml's comment
+and scripts/test_acronym_pronunciation.py for how each one there was actually
+verified (synthesize both readings, transcribe both, keep whichever the
+transcript recovers), not guessed from how it looks on paper.
 """
 
 import re
+import tomllib
+from pathlib import Path
 
 from num2words import num2words
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+CONFIG_PATH = ROOT / "config" / "cortana.toml"
 
 _UNIT_WORDS = {
     "mm": "millimeter", "cm": "centimeter", "km": "kilometer", "m": "meter",
@@ -49,16 +59,31 @@ _DECIMAL_RE = re.compile(r'\b\d+\.\d+\b')
 _INT_RE = re.compile(r'(?<!\d\.)\b\d+\b(?!\.\d)')
 
 # All-caps 2-5 letter tokens are assumed to be initialisms (spelled letter by
-# letter) unless listed here as ones actually pronounced as a single word - see
-# module docstring for how this list was validated (transcribed, not just
-# listened to). Deliberately short and specific rather than a dictionary lookup -
-# add to it only after testing a specific acronym the same way, not by guessing.
-_WORD_ACRONYMS = {"NASA", "OK"}
+# letter) unless listed in [voice.normalize].word_acronyms (cortana.toml) as ones
+# actually pronounced as a single word - see module docstring for how each entry
+# there was validated (transcribed, not just listened to).
 # Doesn't match a caps run immediately followed by a lowercase letter (a plural
 # like "PLAs" or "STLs") - \b requires a transition, and "A"->"s" isn't one. Known
 # gap, not handled: rare enough in practice that it wasn't worth the extra
 # complexity here.
 _ACRONYM_RE = re.compile(r'\b[A-Z]{2,5}\b')
+
+_word_acronyms_cache: set[str] | None = None
+
+
+def _load_word_acronyms() -> set[str]:
+    # Cached at module level, loaded once - normalize() runs on every synthesis
+    # chunk (rule 7's spirit: don't re-read a config file from disk per call).
+    # A config edit needs a process restart to take effect, same as every other
+    # config value this codebase reads once at startup (e.g. XTTSEngine's
+    # inference defaults) - not hot-reloaded.
+    global _word_acronyms_cache
+    if _word_acronyms_cache is None:
+        with CONFIG_PATH.open("rb") as f:
+            config = tomllib.load(f)
+        words = config.get("voice", {}).get("normalize", {}).get("word_acronyms", [])
+        _word_acronyms_cache = {w.upper() for w in words}
+    return _word_acronyms_cache
 
 
 def _spell_number(text: str) -> str:
@@ -93,7 +118,7 @@ def _spell_unit(match: re.Match) -> str:
 
 def _spell_acronym(match: re.Match) -> str:
     word = match.group(0)
-    if word in _WORD_ACRONYMS:
+    if word in _load_word_acronyms():
         return word
     spelled = ". ".join(word)
     # A trailing period after the last letter is what makes it transcribe clean

@@ -147,6 +147,28 @@ enabled  = true
 window_s = 6.0   # only cap volume if the next utterance starts within this long of the last one actually played
 step_db  = 6.0   # max loudness increase per utterance while ramping - recovers to natural level over a few utterances, not instantly
 
+[voice.normalize]
+# services/voice/normalize.py spells out all-caps 2-5 letter runs letter-by-letter
+# by default ("PLA" -> "P. L. A.") - XTTS reads them as a mispronounced regular
+# word otherwise ("PLA" came out "player.a"). This list is the exception: acronyms
+# actually pronounced as a single word. Moved here (not hardcoded in normalize.py)
+# specifically so it can grow without a code change - but every entry still needs
+# the same verification any acronym here has had: synthesize both readings
+# (unspelled and letter-spelled), transcribe both, keep whichever the transcript
+# recovers (scripts/test_acronym_pronunciation.py runs exactly this test). Never
+# add an entry just because it looks like a word on paper - PETG looked like one
+# and tested badly wrong both ways; STEP looked safely letters-only and tested the
+# other way (spelled out, it mis-transcribed to "STP"; unspelled, it read clean).
+# CAD/RADAR/GIF/JPEG transcribed correctly both spelled and unspelled (genuinely
+# ambiguous by that test alone) - added here on real-world spoken convention
+# (nobody spells out "radar" or "jpeg" in speech), not the transcript test alone.
+# PNG tested the same kind of ambiguous but was deliberately left off - convention
+# says people spell it ("P-N-G"), unlike JPEG/GIF's adopted word pronunciations.
+word_acronyms = [
+    "NASA", "OK",
+    "CAD", "STEP", "LASER", "RADAR", "SCUBA", "GIF", "JPEG", "RAM", "ROM",
+]
+
 [voice.kokoro]
 lang_code = "a"        # 'a' = American English (misaki G2P language code)
 voice     = "af_heart"
