@@ -32,6 +32,15 @@ CORRECTION_HISTORY = [
     {"role": "user", "content": "Actually PLA prints at 220, not 210."},
 ]
 
+# Real prior history designed to invite the dry-observation register naturally -
+# asking the same question twice, matching the shape of the existing "third time
+# you've asked" sample line, rather than telling the model to be witty.
+TEASING_HISTORY = [
+    {"role": "user", "content": "Is the export done yet?"},
+    {"role": "assistant", "content": "Not yet - still running."},
+    {"role": "user", "content": "Is the export done now?"},
+]
+
 
 async def _run_messages(label: str, messages: list) -> None:
     chunks = []
@@ -58,16 +67,25 @@ async def run_correction() -> None:
     await _run_messages("[with real prior history] " + CORRECTION_HISTORY[-1]["content"], messages)
 
 
+async def run_teasing() -> None:
+    persona = _load_persona()
+    messages = [{"role": "system", "content": persona}, *TEASING_HISTORY]
+    await _run_messages("[repeated question] " + TEASING_HISTORY[-1]["content"], messages)
+
+
 async def main() -> None:
     arg = sys.argv[1] if len(sys.argv) > 1 else None
     if arg == "correction":
         await run_correction()
+    elif arg == "teasing":
+        await run_teasing()
     elif arg is not None:
         await run_one(QUESTIONS[int(arg)])
     else:
         for q in QUESTIONS:
             await run_one(q)
         await run_correction()
+        await run_teasing()
     await brain_client.aclose()
     tts.close()
 
