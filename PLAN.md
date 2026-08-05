@@ -754,6 +754,62 @@ Structure it as:
 
 The sample lines do more work than everything above them. Rewrite them whenever a real
 response lands wrong.
+### The voice bank — reference lines and the formula
+
+A written reference set of ~65 lines exists, grouped by register. It is **source material
+for `persona.md`, not `persona.md` itself** — most of the lines are in-fiction (reactors,
+corridors, incoming fire) and will never fire in a desktop assistant. The transferable
+parts are the formula and the registers.
+
+**The formula, which is the actual asset:**
+
+> Clear information + intelligent observation + small tease or emotional undertone
+
+That structure generalizes to anything she'll ever say. "The elevator is operational.
+Whether it survives your entrance is another question" and "The CAD job finished. Whether
+it slices is a separate matter" are the same line wearing different clothes.
+
+The pattern also enforces something useful: **information first, personality second.** She
+answers, then colors it. A persona that leads with the joke and buries the answer gets
+tiring within a week.
+
+### Mapping registers to situations that actually occur
+
+The reference set's categories need translating to contexts a desktop assistant hits.
+Rough mapping, with roughly how often each will fire:
+
+| Reference register | Real equivalent | Frequency |
+|---|---|---|
+| Calm information | Status, results, answers to direct questions | **Constant** — most of what she does |
+| Normal conversation | Idle exchanges, ambient observations (Phase 10) | Common |
+| Lightly teasing | Reactive moments, callbacks, camera-cover bits | Common, budget-limited |
+| Correcting someone | Engineering pushback, failed CAD checks, unit errors | Regular, and load-bearing |
+| Curious and analytical | Debugging, reading logs, noticing patterns in your work | Regular |
+| Confident and commanding | Tool execution, computer use (Phase 9) | Regular |
+| Reassuring | Long debugging sessions, repeated failures, late nights | Occasional |
+| Quietly emotional | Rare by design — see below | Very rare |
+| Urgent but controlled | Almost never — no reactors here | Near-zero |
+
+**Write the top four registers first.** Calm information alone is the majority of her
+output, and it's the least interesting to write, which is exactly why it gets neglected.
+A persona that nails the teasing and fumbles "your meeting is at three" is backwards.
+
+**Keep the quietly-emotional register rare and mean it.** Those lines are the most
+appealing to write and the most damaging to overuse — an assistant that reaches for
+emotional weight during ordinary work reads as performing rather than present. Reserve
+them, or they stop landing.
+
+### Turning the bank into `persona.md`
+
+1. **Rewrite ~10 lines per active register** into contexts that actually occur — CAD,
+   builds, calendar, files, listings, the pressure-washing business. Same formula, real
+   subject matter.
+2. **Add the before/after pairs from use.** When a real response lands wrong, paste it in
+   with what she should have said. These beat anything written in advance, because they're
+   corrections to a specific failure rather than guesses about a hypothetical one.
+3. **Keep the bank as an appendix, not as the prompt.** Sixty-five lines of in-fiction
+   dialogue in the system prompt costs context on every turn and pulls her toward talking
+   about corridors. Ten well-chosen in-context lines outperform sixty generic ones.
 
 ### Pushback — especially on engineering and physical reality
 
@@ -1009,7 +1065,12 @@ awaiting approval.
 | Symptom | Usual cause |
 |---|---|
 | Feels sluggish despite good tok/s | Not streaming to TTS at sentence boundaries |
-| Cuts you off mid-sentence | VAD threshold too aggressive |
+| Cuts you off mid-sentence | Threshold tuning can't fix this — real hesitation gaps run 582-1822ms. Build the backchannel instead |
+| Backchannel nags | No rate limit or no escalating patience — twice is attentive, five times is nagging |
+| She finishes your sentences | Prediction being spoken instead of used as an internal completeness signal. Never speak it |
+| Backchannel arrives too late | Generated live instead of pre-rendered — it has to be instant or it's missed its moment |
+| Voice degrades over months | Something fine-tuned TTS on its own output. Fix the reference clip, not the model |
+| Specific words mispronounced | Pronunciation override dictionary, not retraining |
 | Triggers on TV or background talk | Wake word threshold too low; add a confirmation step |
 | Rambles when spoken | System prompt not constraining length; no output sanitization |
 | Forgets across sessions | Profile not being injected every turn — check it isn't only in retrieval |
@@ -1026,6 +1087,9 @@ awaiting approval.
 | Confidently wrong about your mood | Built on emotion inference — switch to attention/presence signals |
 | Ambient comments feel invasive | Budget too high; one per hour is the practical ceiling |
 | Personality reads as generic | Persona written as adjectives instead of sample lines |
+| Talks like she's in a game | Reference lines pasted in raw instead of rewritten into real contexts |
+| Personality before the answer | Formula inverted — information comes first, colour second |
+| Emotional register wears thin | Quietly-emotional lines overused; they only land when rare |
 | Reactive bits get old fast | No escalation tiers, no line rotation, firing every time |
 | Line pool always empty | Idle-time generation job not running, or pool size too small |
 | Agrees with everything | Pushback not written into the persona brief as an explicit trait |
@@ -1062,6 +1126,53 @@ awaiting approval.
 | 8 — Character | A weekend of code; weeks of lead time on the art |
 | 9 — Computer use | Two weeks, and never really "done" |
 | 10 — Camera | 3-4 days for the pipeline; the tuning is ongoing |
+| 11 — Hologram | A weekend, whenever. Don't buy hardware until Phase 8 is lived with. |
 
 Get Phase 1 working end-to-end and ugly before you touch anything else. One wake word,
 one question, one spoken answer.
+
+---
+
+## Later — physical hologram (Phase 11, optional)
+
+Not a phase to build toward. Park it until Phase 8 is done and lived with.
+
+**The key insight that makes this cheap:** Phase 8 already renders the character to a
+transparent, always-on-top window. Every option below is an **output target** for that
+same renderer — a different screen plus a black background. No architecture change, no
+second character system. Which is exactly why you shouldn't buy hardware first: build her
+on the monitor, then decide what she should float above.
+
+### What doesn't work: POV hologram fans
+
+The spinning-LED "hologram fans" sold on Amazon are the obvious thing to reach for and the
+wrong one. They **play pre-loaded video files** from a TF card or phone app — no HDMI in,
+no live video path, no real-time rendering. A reactive assistant can't use that: no lip
+sync to TTS, no expression changes, no reacting to the camera. You'd be watching a loop.
+
+Three more disqualifiers even ignoring that: small units (~9") render a character the size
+of your hand; the "resolution" is LED beads on spinning blades, adequate for a logo and
+useless for a face; and they only render bright-on-black, so you get a glowing outline
+rather than a rendered character. They're also loud, and they're an exposed spinning blade.
+
+### What does work
+
+| Option | Real-time? | Cost | Notes |
+|---|---|---|---|
+| **Pepper's ghost** | Yes | Very low | Angled glass/acrylic reflecting a screen. The technique behind every theme-park "ghost." A weekend build. |
+| **Looking Glass** | Yes | Moderate | Actual light-field display with a real SDK and developer support. Closest to what people picture when they say hologram. |
+| **Transparent OLED** | Yes | High | Best looking by a distance, priced accordingly. |
+
+**Pepper's ghost is the right first attempt.** It's cheap enough to fail at, it's genuinely
+real-time because it's only reflecting a live display, and building one teaches you the
+constraints — viewing angle, ambient light, the size/brightness tradeoff — before spending
+real money on a Looking Glass.
+
+### What the render needs
+
+Whichever path, the Phase 8 renderer needs one addition: a **display mode** in
+`cortana.toml` that renders the character on pure black, at a configurable size and
+orientation, targeted at a specific display. For Pepper's ghost specifically, add a
+horizontal-flip option — the reflection reverses the image.
+
+Everything else — state machine, lip sync, expressions, gaze — carries over untouched.
