@@ -459,6 +459,22 @@ Hard rules:
 - Anything that deletes, sends, spends, or unlocks requires spoken confirmation
 - Never give an autonomous loop unrestricted shell on the host
 
+**Known cost, not yet paid: `[thinking].agent = true`.** Built and measured in A8 -
+`think=false` (the voice loop's default) was unreliable at the tool-selection step
+itself (2/5 correct tool-call chains on a real test: narrated intent instead of
+calling a tool, lost track mid-chain, once hallucinated a filename). `think=true`
+fixed it completely (5/5, re-confirmed 3/3 more) but costs ~2-3x per call
+(~1.2-3.5s vs ~0.8-1.7s), and a single turn makes 2-3 calls. Accepted without
+consequence in A8 because the agent loop runs standalone, off the voice path
+entirely. **The moment it's wired into `services/brain/loop.py`, that's 5-10s of
+added latency stacked on top of the ~2.3s first-audio-out number (A5)** - not a
+theoretical concern, a real regression to measure and address at that point, not
+before. Obvious mitigation to evaluate then, not built now: think only on the
+tool-selection calls (deciding which tool, if any) and drop back to `think=false`
+for the final response-generation call once tool results are in hand - the
+reliability gap A8 found was specifically in the selection step, not in
+synthesizing a final answer from data already in context.
+
 **Done when:** you can say "turn off the lights and tell me what's on my calendar
 tomorrow" and it does both in one turn.
 
