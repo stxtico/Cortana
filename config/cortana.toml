@@ -115,14 +115,16 @@ synth_workers = 1        # concurrent sentence-synthesis workers in speak_stream
 #                       615ms TTFA, 0ms gaps, fastest total time in the original
 #                       six-way comparison. Default as of that listening verdict -
 #                       both TTFA and gap-free, no tradeoff needed.
-#                       A5 (2026-08-04): trigger tightened from 2-sentences-or-
-#                       300-chars to 1-sentence-or-150-chars - TTFA-only stage
-#                       measured 572ms -> 394ms with the same 0ms max gap on a
-#                       real speak_stream() run (scripts/compare_buffered_triggers.py).
-#                       1-sentence-alone (no char fallback) measured faster still
-#                       (301ms) but reintroduced a small real gap (118ms) -
-#                       tried, not landed, pending a listening call on whether
-#                       that gap is audible.
+#                       A5 (2026-08-04): trigger tightened in two steps, both
+#                       measured on real speak_stream() runs
+#                       (scripts/compare_buffered_triggers.py). 2-sentences-or-
+#                       300-chars -> 1-sentence-or-150-chars: 572ms -> 394ms TTFA,
+#                       same 0ms max gap. Then 1-sentence-alone (no char
+#                       co-trigger): 301ms TTFA, a small real gap (118ms) -
+#                       listening verdict: inaudible, landed as the default.
+#                       _BUFFERED_START_CHAR_THRESHOLD (150 -> 250) is now a pure
+#                       safety net for an abnormally long sentence 1, not a
+#                       second active trigger path.
 strategy      = "buffered_stream"
 # Master output level - one place covering every playback path (play_audio(),
 # _play_all() - backchannels and real responses alike), applied in tts.py after

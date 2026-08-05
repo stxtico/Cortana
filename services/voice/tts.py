@@ -353,11 +353,13 @@ async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asy
     await chunk_queue.put(None)
 
 
-_BUFFERED_START_CHAR_THRESHOLD = 150  # fire the first inference_stream call once buffered
-# text reaches this many characters, even if sentence 1 hasn't completed yet - a safety net
-# against an unusually long sentence 1, not the normal trigger for realistic responses (A5:
-# lowered from 300 alongside the 2-sentences -> 1-sentence trigger change, same measurement -
-# see _consume_buffered_start's docstring).
+_BUFFERED_START_CHAR_THRESHOLD = 250  # pure safety net - only fires if sentence 1 itself
+# hasn't hit a sentence boundary by this many raw characters (an unusually long run-on
+# opener), never the normal trigger. A5: the trigger is 1-sentence-alone now (the char
+# threshold used to co-trigger at 150 chars, tested and found the resulting 118ms gap
+# inaudible - see _consume_buffered_start's docstring) - raised well above any realistic
+# single-sentence length (persona.md's short-opener rule keeps sentence 1 well under this)
+# so it stays a backstop, not a second active trigger path.
 _MAX_CHUNK_CHARS = 350  # hard per-call cap, used by every consumer that can combine multiple
 # sentences into one synthesis call (whole_text, hybrid's remainder, hybrid3's chunk 2/3,
 # buffered_stream). XTTS reproducibly truncated audio past ~450 characters in a single call
@@ -411,19 +413,19 @@ def _normalized_capped_chunks(text: str, max_chars: int) -> list[str]:
 
 
 async def _consume_buffered_start(token_iterator: AsyncIterator[str], chunk_queue: "asyncio.Queue[str | None]") -> None:
-    """First inference_stream call gets sentence 1 alone (or ~150 chars, whichever
-    comes first) - a tighter trigger than the original 2-sentences-or-300-chars
-    (A5). This is NOT A3's hybrid trade-off: hybrid fires one sentence then waits
-    for the *entire rest of the response* as one call (that's what produced a
-    3.6s mid-response gap there) - here the remainder always fires as its own
+    """First inference_stream call gets sentence 1 alone - the tightest trigger
+    tried (A5). This is NOT A3's hybrid trade-off: hybrid fires one sentence then
+    waits for the *entire rest of the response* as one call (that's what produced
+    a 3.6s mid-response gap there) - here the remainder always fires as its own
     separate inference_stream() call regardless of how the first chunk triggers,
     so a tighter first-chunk trigger doesn't reopen that failure mode. Measured
     directly (scripts/compare_buffered_triggers.py, real speak_stream() runs):
     2-sentences-or-300-chars was 572ms TTFA/0ms max gap; 1-sentence-or-150-chars
-    was 394ms TTFA/0ms max gap - strictly better on this test. 1-sentence-alone
-    was faster still (301ms) but reintroduced a real, small gap (118ms) - left as
-    the config-level next step, not the default, since gap audibility is a
-    listening call. Both pieces run through _normalized_capped_chunks
+    was 394ms/0ms; 1-sentence-alone was fastest (301ms) with a small real gap
+    (118ms) - listening verdict: inaudible, landed as the default.
+    _BUFFERED_START_CHAR_THRESHOLD is a pure safety net now (see its own comment),
+    not a co-equal trigger - sentence completion is the only path expected to
+    fire in normal use. Both pieces run through _normalized_capped_chunks
     (sanitize+normalize, THEN cap - see its docstring for why the order matters)
     so neither risks XTTS's long-input truncation."""
     buffer = ""
