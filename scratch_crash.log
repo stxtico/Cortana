@@ -1,0 +1,52 @@
+Warming engine...
+Engine warm.
+The text length exceeds the character limit of 250 for language 'en', this might cause truncated audio: ignis, whose scales shimmered with the deep, molte...
+Cancelling...
+CancelledError propagated cleanly
+Windows fatal exception: access violation
+
+Thread 0x00008568 (most recent call first):
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1169 in _wait_for_tstate_lock
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1149 in join
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\concurrent\futures\thread.py", line 239 in shutdown
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 616 in _do_shutdown
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1012 in run
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1032 in _bootstrap
+
+Current thread 0x00006280 (most recent call first):
+  File "C:\dev\cortana\.venv\Lib\site-packages\sounddevice.py", line 1316 in _raw_write
+  File "C:\dev\cortana\.venv\Lib\site-packages\sounddevice.py", line 1582 in write
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\concurrent\futures\thread.py", line 59 in run
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\concurrent\futures\thread.py", line 93 in _worker
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1012 in run
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00006820 (most recent call first):
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\concurrent\futures\thread.py", line 90 in _worker
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1012 in run
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x00007608 (most recent call first):
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\windows_events.py", line 774 in _poll
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\windows_events.py", line 445 in select
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 1961 in _run_once
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 645 in run_forever
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\windows_events.py", line 322 in run_forever
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1012 in run
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1075 in _bootstrap_inner
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\threading.py", line 1032 in _bootstrap
+
+Thread 0x0000d01c (most recent call first):
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\windows_events.py", line 774 in _poll
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\windows_events.py", line 445 in select
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 1961 in _run_once
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 645 in run_forever
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\windows_events.py", line 322 in run_forever
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\base_events.py", line 678 in run_until_complete
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\runners.py", line 72 in close
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\runners.py", line 62 in __exit__
+  File "C:\Users\allen\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\Lib\asyncio\runners.py", line 194 in run
+  File "<string>", line 25 in <module>
