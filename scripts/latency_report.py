@@ -48,6 +48,38 @@ def _read_jsonl(path: Path, since: datetime | None = None, until: datetime | Non
     return records
 
 
+def _split_ttfc(voice_records: list[dict]) -> tuple[list[float], list[float]]:
+    """'TTS first chunk' (ttfc_ms) is measured from speak_stream()'s entry, before
+    any LLM token has arrived - for buffered_stream/hybrid/etc. that time includes
+    however long the trigger condition (e.g. 2 sentences or 300 chars) took the
+    LLM to satisfy, not just real TTS engine latency. Diagnosed directly (A5):
+    ~1.5s of a typical 1.4-2.8s ttfc_ms was LLM generation pacing, not synthesis -
+    the budget table was misattributing it to TTS.
+
+    Splits it using tts.py's 'synthesize_call' records (since_stream_start_ms,
+    same clock/origin as ttfc_ms) - log order is chronological within one
+    process, and the first chunk's synthesize_call always immediately precedes
+    its own ttfc, so pairing each ttfc with the most recent preceding
+    synthesize_call correctly isolates: wait_for_text_ms (time to trigger) +
+    engine_synth_ms (ttfc_ms - that) = ttfc_ms. Older log entries recorded before
+    since_stream_start_ms existed are skipped, not zero-filled - they'd silently
+    understate engine_synth_ms."""
+    wait_ms: list[float] = []
+    synth_ms: list[float] = []
+    last_since_start: float | None = None
+    for r in voice_records:
+        stage = r.get("stage")
+        if stage == "synthesize_call" and r.get("since_stream_start_ms") is not None:
+            last_since_start = r["since_stream_start_ms"]
+        elif stage == "ttfc":
+            ttfc = r.get("ttfc_ms")
+            if ttfc is not None and last_since_start is not None:
+                wait_ms.append(last_since_start)
+                synth_ms.append(max(0.0, ttfc - last_since_start))
+            last_since_start = None  # consumed - don't pair with a later ttfc
+    return wait_ms, synth_ms
+
+
 def _stats(values: list[float]) -> dict:
     if not values:
         return {"n": 0, "median": None, "p95": None, "max": None}
@@ -116,6 +148,7 @@ def main() -> None:
     backchannel_ms = _values(ears, "backchannel", "latency_ms")
     ttft_ms = [r["ttft_ms"] for r in brain if r.get("ttft_ms") is not None]
     ttfc_ms = _values(voice, "ttfc", "ttfc_ms")
+    wait_for_text_ms, engine_synth_ms = _split_ttfc(voice)
 
     critical_path = [
         ("Wake word detect", wake_ms, 50),
@@ -141,6 +174,17 @@ def main() -> None:
     else:
         missing = [name for (name, _, _), m in zip(critical_path, medians) if m is None]
         print(f"{'First audio out (derived)':<38} insufficient data - no records yet for: {', '.join(missing)}")
+
+    print()
+    print("'TTS first chunk' breakdown (A5): the row above is measured from speak_stream()'s")
+    print("entry, before any LLM token has arrived - for buffered_stream/hybrid/etc. it")
+    print("includes however long the trigger condition took the LLM to satisfy, not just")
+    print("real TTS engine latency. Split below via tts.py's synthesize_call records -")
+    print("rows with n=0 mean no post-fix log data in this window yet (nothing to derive it from).")
+    print(header)
+    print("-" * len(header))
+    _print_row("  waiting for LLM text (first-chunk trigger)", _stats(wait_for_text_ms), None)
+    _print_row("  engine synthesis (first chunk, once triggered)", _stats(engine_synth_ms), None)
 
     print()
     print("New stages (not in the original CLAUDE.md budget table - added per PROMPTS.md A4):")

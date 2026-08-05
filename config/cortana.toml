@@ -110,10 +110,19 @@ synth_workers = 1        # concurrent sentence-synthesis workers in speak_stream
 #   inference_stream  - whole response as one Xtts.inference_stream() call, played as
 #                       it generates. 0ms gaps, but 1064ms TTFA (waits for the full
 #                       token stream before starting synthesis).
-#   buffered_stream   - inference_stream fired as soon as sentence 2 completes (or
-#                       ~300 chars), remainder as a second inference_stream call.
-#                       615ms TTFA, 0ms gaps, fastest total time. Default as of the
-#                       listening verdict - both TTFA and gap-free, no tradeoff needed.
+#   buffered_stream   - inference_stream fired as soon as the trigger condition
+#                       completes, remainder as a second inference_stream call.
+#                       615ms TTFA, 0ms gaps, fastest total time in the original
+#                       six-way comparison. Default as of that listening verdict -
+#                       both TTFA and gap-free, no tradeoff needed.
+#                       A5 (2026-08-04): trigger tightened from 2-sentences-or-
+#                       300-chars to 1-sentence-or-150-chars - TTFA-only stage
+#                       measured 572ms -> 394ms with the same 0ms max gap on a
+#                       real speak_stream() run (scripts/compare_buffered_triggers.py).
+#                       1-sentence-alone (no char fallback) measured faster still
+#                       (301ms) but reintroduced a small real gap (118ms) -
+#                       tried, not landed, pending a listening call on whether
+#                       that gap is audible.
 strategy      = "buffered_stream"
 # Master output level - one place covering every playback path (play_audio(),
 # _play_all() - backchannels and real responses alike), applied in tts.py after

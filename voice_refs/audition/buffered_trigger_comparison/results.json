@@ -1,0 +1,80 @@
+[
+  {
+    "variant": "1sentence",
+    "ttfc_ms": 300.6,
+    "total_s": 12.88,
+    "audio_s": 12.53,
+    "n_chunks": 14,
+    "gaps_ms": [
+      118.4,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_gap_ms": 118.4,
+    "transcript": "Got it. Your meeting's at 3, and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the STEP file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\buffered_trigger_comparison\\1sentence.wav"
+  },
+  {
+    "variant": "1sentence_or_150chars",
+    "ttfc_ms": 393.9,
+    "total_s": 14.12,
+    "audio_s": 13.7,
+    "n_chunks": 16,
+    "gaps_ms": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_gap_ms": 0.0,
+    "transcript": "Got it. Your meeting's at 3, and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the STP file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\buffered_trigger_comparison\\1sentence_or_150chars.wav"
+  },
+  {
+    "variant": "2sentences_or_300chars_current",
+    "ttfc_ms": 572.4,
+    "total_s": 13.51,
+    "audio_s": 12.91,
+    "n_chunks": 15,
+    "gaps_ms": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_gap_ms": 0.0,
+    "transcript": "Got it. Your meeting's at 3, and the CAD job finished about an hour ago. The export looks clean, no errors in the log, and the STEP file is ready for review. I'll flag it if anything changes before then.",
+    "wav": "C:\\dev\\Cortana\\voice_refs\\audition\\buffered_trigger_comparison\\2sentences_or_300chars_current.wav"
+  }
+]

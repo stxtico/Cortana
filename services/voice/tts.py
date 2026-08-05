@@ -353,9 +353,11 @@ async def _consume_hybrid3(token_iterator: AsyncIterator[str], chunk_queue: "asy
     await chunk_queue.put(None)
 
 
-_BUFFERED_START_CHAR_THRESHOLD = 300  # fire the first inference_stream call once buffered
-# text reaches this many characters, even if sentence 2 hasn't completed yet - a safety net
-# against an unusually long sentence 1/2, not the normal trigger for realistic responses.
+_BUFFERED_START_CHAR_THRESHOLD = 150  # fire the first inference_stream call once buffered
+# text reaches this many characters, even if sentence 1 hasn't completed yet - a safety net
+# against an unusually long sentence 1, not the normal trigger for realistic responses (A5:
+# lowered from 300 alongside the 2-sentences -> 1-sentence trigger change, same measurement -
+# see _consume_buffered_start's docstring).
 _MAX_CHUNK_CHARS = 350  # hard per-call cap, used by every consumer that can combine multiple
 # sentences into one synthesis call (whole_text, hybrid's remainder, hybrid3's chunk 2/3,
 # buffered_stream). XTTS reproducibly truncated audio past ~450 characters in a single call
@@ -409,24 +411,32 @@ def _normalized_capped_chunks(text: str, max_chars: int) -> list[str]:
 
 
 async def _consume_buffered_start(token_iterator: AsyncIterator[str], chunk_queue: "asyncio.Queue[str | None]") -> None:
-    """First inference_stream call gets sentence 1 + sentence 2 (or ~300 chars,
-    whichever comes first) - meaningfully more whole-text-ish conditioning context
-    than hybrid's sentence-1-alone, without waiting for the full response the way
-    plain inference_stream (via _consume_whole_text) does. Remainder becomes a
-    second call once the stream ends. Both pieces run through
-    _normalized_capped_chunks (sanitize+normalize, THEN cap - see its docstring for
-    why the order matters) so neither risks XTTS's long-input truncation."""
+    """First inference_stream call gets sentence 1 alone (or ~150 chars, whichever
+    comes first) - a tighter trigger than the original 2-sentences-or-300-chars
+    (A5). This is NOT A3's hybrid trade-off: hybrid fires one sentence then waits
+    for the *entire rest of the response* as one call (that's what produced a
+    3.6s mid-response gap there) - here the remainder always fires as its own
+    separate inference_stream() call regardless of how the first chunk triggers,
+    so a tighter first-chunk trigger doesn't reopen that failure mode. Measured
+    directly (scripts/compare_buffered_triggers.py, real speak_stream() runs):
+    2-sentences-or-300-chars was 572ms TTFA/0ms max gap; 1-sentence-or-150-chars
+    was 394ms TTFA/0ms max gap - strictly better on this test. 1-sentence-alone
+    was faster still (301ms) but reintroduced a real, small gap (118ms) - left as
+    the config-level next step, not the default, since gap audibility is a
+    listening call. Both pieces run through _normalized_capped_chunks
+    (sanitize+normalize, THEN cap - see its docstring for why the order matters)
+    so neither risks XTTS's long-input truncation."""
     buffer = ""
     first_chunk_sent = False
     async for token in token_iterator:
         buffer += token
         if not first_chunk_sent:
             sentences, remainder = _split_sentences(buffer)
-            if len(sentences) >= 2:
-                first_text = "".join(sentences[:2])
+            if len(sentences) >= 1:
+                first_text = sentences[0]
                 for piece in _normalized_capped_chunks(first_text, _MAX_CHUNK_CHARS):
                     await chunk_queue.put(piece)
-                buffer = "".join(sentences[2:]) + remainder
+                buffer = "".join(sentences[1:]) + remainder
                 first_chunk_sent = True
             elif len(buffer) >= _BUFFERED_START_CHAR_THRESHOLD:
                 for piece in _normalized_capped_chunks(buffer, _MAX_CHUNK_CHARS):
@@ -516,6 +526,21 @@ async def speak_stream(
             if not clean:
                 continue
             text_chars = len(clean)
+            # Every synthesis call, its exact text and length - not derived from
+            # the "sentence"/ttfc records below, which log playback timing per
+            # audio sub-chunk, not the source text. Needed to point at the
+            # specific chunk behind a live quality issue (e.g. accent drift)
+            # instead of guessing from length alone.
+            # since_stream_start_ms, measured the same way ttfc_ms is (relative to
+            # stream_start, captured once at speak_stream()'s entry): for the
+            # first chunk this is how long buffered_stream/hybrid/etc. waited for
+            # enough LLM text to trigger synthesis at all - latency_report.py
+            # subtracts it from ttfc_ms to get real engine synthesis time,
+            # instead of misattributing LLM generation pacing to "TTS first chunk".
+            _log({
+                "stage": "synthesize_call", "engine": engine_name, "text": clean, "chars": text_chars,
+                "since_stream_start_ms": round((time.perf_counter() - stream_start) * 1000, 1),
+            })
             last_chunk_time = time.perf_counter()
             async for audio in engine.synthesize_stream(clean):
                 now = time.perf_counter()
@@ -554,6 +579,15 @@ async def speak_stream(
                 if item is None:
                     break
                 idx, clean = item
+                # Every synthesis call, its exact text and length - see the same
+                # log call in _stream_synthesize() for why this is separate from
+                # the "sentence"/ttfc playback-timing records below. See
+                # _stream_synthesize()'s matching comment for why
+                # since_stream_start_ms is here too.
+                _log({
+                    "stage": "synthesize_call", "engine": engine_name, "text": clean, "chars": len(clean),
+                    "since_stream_start_ms": round((time.perf_counter() - stream_start) * 1000, 1),
+                })
                 synth_start = time.perf_counter()
                 audio = await asyncio.to_thread(engine.synthesize, clean)
                 synth_ms = (time.perf_counter() - synth_start) * 1000
