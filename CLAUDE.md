@@ -800,6 +800,15 @@ cortana/
    misconfigurations that never crashed, just underperformed (thinking mode inflating
    TTFC, per-call httpx client, CPU-only torch). Assume a new one is a config problem
    before assuming it's a hard performance ceiling.
+9. **Not every file in this repo is safe to replace wholesale.** `PLAN.md` and
+   `PROMPTS.md` are reference docs maintained outside the repo — dropping in an
+   updated copy is expected and fine. `CLAUDE.md`, `config/cortana.toml`, and
+   `config/persona.md` are live files edited during the build itself; overwriting
+   one from an external copy silently discards everything learned since that copy
+   was made, with no error and no diff that looks obviously wrong at a glance. This
+   has already happened twice — rule 7 was lost once, the entire Done log another
+   time. If one of these three looks collapsed, reverted, or missing content you
+   know should be there, say so before working from it — don't assume it's current.
 
 ## Latency budget (Phase 1, enforced in code)
 
