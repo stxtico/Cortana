@@ -995,9 +995,12 @@ A8's tool-calling demands first, see Done below)
   exposed.** Genuinely "returned through TTS," not just printed: `execute()`
   speaks the question aloud through the same engine every response uses
   (`services/voice/tts.py`), verified live (real XTTS synthesis and
-  playback). The answer side stays honestly keyboard-only, same reasoning as
-  A9's confirmation gate - `agent.py` has no wiring yet to
-  `services/ears/pipeline.py`'s mic/STT path.
+  playback). **The answer side is a known, explicit deferral, same category
+  as `web_search` (A8) and `calendar_read`/`email_read` (A9): keyboard-only
+  until `agent.py` is wired into `services/brain/loop.py`'s live conversation
+  loop, because there is currently no path at all from a spoken word to this
+  process** - `services/ears/pipeline.py`'s mic/STT output isn't connected to
+  `agent.py` yet. Not a placeholder pretending to work; stated plainly.
   `persona.md` governs *when* asking is right (irreversible actions, missing
   filenames/dimensions, genuine ambiguity - guessing is the failure there,
   not asking); the one-question-per-turn *cap* is enforced in `agent.py`'s
@@ -1030,6 +1033,24 @@ A8's tool-calling demands first, see Done below)
   answer captured, correctly used in the final response (asked material,
   got "PETG," answered "230 degrees Celsius" - genuinely correct for that
   filament, not a coincidence like A6's "0.5" guess).
+  **Follow-up: factored the actual keyboard-input mechanism out to
+  `services/brain/user_input.py`, shared by `agent_safety.confirm()` and
+  `ask_user.execute()` - without merging their semantics.** `confirm()` is a
+  dispatcher-enforced gate that stops an action already decided (the model
+  can't route around it); `ask_user` is the model choosing to ask a question
+  before deciding anything, a normal tool call with no gate behavior. They
+  were sharing the *shape* of their input handling (both doing their own
+  `asyncio.to_thread(input, ...)`) without sharing the code, which meant two
+  places to update instead of one. `user_input.py`'s `get_answer()` is the one
+  real mechanism now; `set_input_handler()` swaps it for a voice-based
+  callback at the loop-integration step - a callback change for both callers
+  at once, not a redesign of either, and not built twice now for the same
+  reason A9's gate stayed keyboard-only rather than getting its own separate
+  voice path early. Verified live: both real end-to-end paths still work
+  through the shared plumbing (a real `write_file` confirmation, a real
+  spoken `ask_user` question with a typed answer), and a swapped fake handler
+  transparently changed both `confirm()`'s and `ask_user()`'s behavior with
+  zero edits to either call site.
   **`is_available()`'s emptiness check turned out to be a second, subtler
   version of the exact bug it was fixed to avoid - both prior versions
   inferred mount state from `/mnt`'s directory contents instead of asking the

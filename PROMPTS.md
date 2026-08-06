@@ -91,17 +91,32 @@ practices, not just one-off patches:
   both defenses held at once. See CLAUDE.md's A9 entry for the details.
 
 **A10: `ask_user` built and verified live.** Genuinely spoken through the real TTS
-engine, not printed-and-called-done - the answer side is honestly keyboard-only for
-now (same gap as A9's confirmation gate: `agent.py` has no mic/STT wiring yet). The
-one-question-per-turn cap is dispatcher-enforced (`agent.py`'s `run_agent()`), not
-trusted to persona.md alone - proven under adversarial testing, not just asserted: a
-deliberately double-ambiguous request made the model try to ask again 6 more times
-after the first real question, and every one was correctly blocked. A real bug
-surfaced along the way, in a different module than the one being tested:
+engine, not printed-and-called-done. **The answer side is a known, explicit
+deferral - same category as `web_search` (A8) and `calendar_read`/`email_read`
+(A9): keyboard-only until `agent.py` is wired into the live conversation loop,
+because there is currently no path at all from a spoken word into this process**
+(`services/ears/pipeline.py`'s mic/STT output isn't connected to `agent.py` yet).
+The one-question-per-turn cap is dispatcher-enforced (`agent.py`'s `run_agent()`),
+not trusted to persona.md alone - proven under adversarial testing, not just
+asserted: a deliberately double-ambiguous request made the model try to ask again
+6 more times after the first real question, and every one was correctly blocked. A
+real bug surfaced along the way, in a different module than the one being tested:
 `tools/shell.py`'s WSL subprocess call didn't set `stdin=DEVNULL`, so it silently
 consumed piped input meant for `ask_user`'s later `input()` call, surfacing as an
 unrelated-looking `EOFError`. Fixed there and defensively in `tools/_outlook.py`'s
 subprocess call too. See CLAUDE.md's A10 entry for the full trace.
+
+Follow-up: the keyboard-input mechanism itself was factored out to
+`services/brain/user_input.py`, shared by A9's `agent_safety.confirm()` and A10's
+`ask_user.execute()` - without merging their meaning. A confirmation gate stops an
+action already decided; `ask_user` is the model asking before deciding anything.
+They shared the *shape* of "wait for typed input" without sharing code (two copies
+to keep in sync); now there's one real mechanism, and `set_input_handler()` swaps
+it for a real voice callback at the loop-integration step - built once, for both,
+not twice now for the same reason the gate itself stayed keyboard-only rather than
+getting an early one-off voice path. Verified live: both real paths still work
+through the shared plumbing, and swapping in a fake handler changed both
+`confirm()`'s and `ask_user()`'s behavior with zero edits to either call site.
 
 ---
 

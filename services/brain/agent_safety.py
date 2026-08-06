@@ -6,13 +6,17 @@ two-thirds reliability under real testing (A5a's padding investigation,
 CLAUDE.md) - nowhere near a safety bar. A gate the model can talk its way past
 isn't a gate.
 
-Confirmation is keyboard-only right now. services/brain/agent.py runs
-standalone - services/ears/pipeline.py's listen() (the mic -> STT path) isn't
-wired into it, so there is no way for a spoken "yes" to reach this dispatcher
-yet. This is a real, current limitation, not a placeholder pretending to work:
-until agent.py is wired into services/brain/loop.py's conversation loop,
-"confirm" means typing at this process's stdin. Voice confirmation is future
-work for that wiring, not something to fake here.
+Confirmation is keyboard-only right now, via services/brain/user_input.py's
+shared get_answer() - services/ears/pipeline.py's listen() (the mic -> STT
+path) isn't wired into agent.py yet, so there is no way for a spoken "yes" to
+reach this dispatcher. This is a real, current limitation, not a placeholder
+pretending to work: until agent.py is wired into services/brain/loop.py's
+conversation loop, "confirm" means typing at this process's stdin. Voice
+confirmation is future work for that wiring - see user_input.py's docstring
+for why the mechanism is shared with tools/ask_user.py while this function's
+gate semantics (yes/no, stops an action already decided, the model can't
+route around it) stay this module's own and aren't confused with ask_user's
+(free text, the model choosing to ask before deciding anything).
 """
 
 import asyncio
@@ -20,6 +24,8 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+
+from services.brain import user_input
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 AGENT_LOG_PATH = ROOT / "logs" / "agent.jsonl"
@@ -58,12 +64,12 @@ def credential_violation(arguments: dict) -> str | None:
 
 
 async def confirm(description: str, timeout_s: float = 120.0) -> bool:
-    """Blocks (off the event loop thread, via asyncio.to_thread) until the
-    user types y/n at stdin, or the timeout elapses - a confirmation that
-    times out is treated as declined, not as hung forever."""
+    """Blocks until the user answers (via user_input.get_answer(), currently
+    CLI) or the timeout elapses - a confirmation that times out is treated as
+    declined, not as hung forever."""
     print(f"\n[CONFIRMATION NEEDED]\n{description}")
     try:
-        answer = await asyncio.wait_for(asyncio.to_thread(input, "Proceed? [y/N] "), timeout=timeout_s)
+        answer = await asyncio.wait_for(user_input.get_answer("Proceed? [y/N] "), timeout=timeout_s)
     except asyncio.TimeoutError:
         print("(no response within the timeout - treating as declined)")
         _log({"stage": "confirmation", "outcome": "timeout"})

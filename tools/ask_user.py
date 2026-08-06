@@ -3,10 +3,16 @@ The question side is genuinely "returned through TTS": speaks it aloud via the
 real engine (services/voice/tts.py), the same one every other response uses,
 not printed-and-called-done. The answer side is honestly not there yet -
 agent.py runs standalone, with no wiring to services/ears/pipeline.py's
-mic/STT path, so there is no way for a spoken answer to reach this tool. Same
-gap A9's confirmation gate (services/brain/agent_safety.py) already has, for
-the same reason - keyboard for now, voice once agent.py is wired into the
-live conversation loop.
+mic/STT path, so there is no way for a spoken answer to reach this tool.
+Answer capture goes through services/brain/user_input.py's shared
+get_answer() - CLI today, swappable for voice at the loop-integration step -
+but this is deliberately NOT the same thing as A9's confirmation gate
+(services/brain/agent_safety.py), even though both are keyboard-only for the
+same underlying reason. confirm() stops an action already decided, enforced
+so the model can't route around it; ask_user is the model choosing to ask
+before deciding anything, a normal tool call with no gate semantics. They
+share the input plumbing, not the meaning of an answer - see user_input.py's
+docstring.
 
 Not REQUIRES_CONFIRMATION - asking a question isn't itself an action that
 needs confirming, it's how other actions get clarified before they happen.
@@ -17,8 +23,7 @@ constraints measured at roughly two-thirds reliability, nowhere near
 something a hard cap should depend on.
 """
 
-import asyncio
-
+from services.brain import user_input
 from services.voice import tts as voice_tts
 
 REQUIRES_CONFIRMATION = False
@@ -66,5 +71,5 @@ async def execute(question: str, options: list[str] | None = None) -> str:
     prompt_text = describe(question, options)
     await _speak(prompt_text)
     print(f"\n[ASK_USER] {prompt_text}")
-    answer = await asyncio.to_thread(input, "Your answer: ")
+    answer = await user_input.get_answer("Your answer: ")
     return answer.strip()
