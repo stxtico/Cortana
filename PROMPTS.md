@@ -11,8 +11,10 @@ Don't skip ahead. Don't bundle two steps into one prompt.
 ## Progress (as of 2026-08-05)
 
 **Done:** A0, A1, A2, A3, A4, A5a (persona), A6, A7 (memory), A8 (agent loop + tools,
-web_search deferred - see below). A5b (latency) is partially done and deliberately paused.
-**Next:** A9 — Write tools with confirmation gates.
+web_search deferred), A9 (write tools + confirmation gate + abort hotkey, shell
+deferred pending a one-time WSL setup step - see below). A5b (latency) is partially
+done and deliberately paused.
+**Next:** A10 — Clarifying behavior.
 
 Two known limitations discovered during A5a, recorded so they aren't re-chased:
 
@@ -47,6 +49,26 @@ arguably the better test anyway (multi-step, real whitelisted directory, no exte
 dependency so a failure means the loop is broken rather than the network): "read the
 config file and tell me what the wake threshold is" — verified, see CLAUDE.md's A8
 entry for what it took to get reliable (not the first thing tried).
+
+**A9: `write_file`, `shell`, `calendar_read`, `email_read` built. `shell` is dormant
+pending a one-time setup step outside this repo** (a dedicated, isolated WSL2 distro -
+see CLAUDE.md's A9 entry for the exact commands and why the existing default distro
+can't be reused). Confirmation gate and the no-credentials rule are both real code in
+`services/brain/agent_safety.py`, not persona instructions - A5a already measured
+negative persona constraints holding at roughly two-thirds reliability, not a safety
+bar. Confirmation is keyboard-only for now: `agent.py` runs standalone, with no wiring
+to the mic/STT path yet, so there's no way for a spoken "yes" to reach the dispatcher -
+stated plainly, not pretended otherwise. Global abort hotkey (`ctrl+shift+x` by
+default) verified functionally (task cancellation logic confirmed live), though a real
+physical keypress wasn't tested in this environment - worth a real check when someone's
+at the keyboard. A live bug surfaced and fixed during this step, now a standing rule
+(CLAUDE.md #10): an `is_available()` check must never be capable of starting or
+changing anything, since it runs on every single turn - `tools/_outlook.py`'s first
+version used a COM call that actually launches Outlook if it isn't already running,
+caught by it doing exactly that during testing (a real process, hung 30+ seconds, no
+visible window). Fixed to a read-only running-process check first, then `GetActiveObject`
+(never `Dispatch`) - Outlook must already be running for calendar_read/email_read to
+activate at all, permanently dormant otherwise, which is the correct failure mode here.
 
 ---
 

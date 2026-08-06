@@ -16,14 +16,24 @@ If a future model ever does stream substantial commentary before invoking a
 tool, that commentary would currently be spoken even though more processing
 follows - a known, accepted edge case, not solved here.
 
-web_search is registered like any other tool but gated live (see the
-is_available() check below) - no Docker on this machine and no Tavily key
-means neither search backend actually works right now, a deliberate
-infrastructure deferral, not a broken build (see CLAUDE.md). It'll offer
-itself to the model automatically the moment either backend becomes real,
-no code change needed.
+web_search, shell, calendar_read, and email_read are all registered like any
+other tool but gated live via an is_available() check (same pattern for all
+four - see _drop_unavailable_tools() below): no Docker/dedicated WSL distro
+means shell can't run, no Outlook means calendar/email can't, no search
+backend means web_search can't. Each offers itself to the model automatically
+the moment its real dependency exists, no code change needed - see CLAUDE.md's
+A8/A9 entries for what's actually deferred and why.
+
+write_file and shell are write-capable and gated a second, different way:
+REQUIRES_CONFIRMATION (checked in _call_tool) blocks execution until
+agent_safety.confirm() returns True - real dispatcher code, not a persona
+instruction (CLAUDE.md rule 4, and A5a's padding investigation found negative
+persona constraints hold at roughly two-thirds reliability - nowhere near a
+safety bar). agent_safety.py also enforces the no-credentials rule on every
+tool call's arguments, and owns the global abort hotkey.
 """
 
+import asyncio
 import json
 import time
 import tomllib
@@ -31,8 +41,9 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
 
+from services.brain import agent_safety
 from services.brain import client as brain_client
-from tools import fetch_url, list_dir, read_file, web_search
+from tools import calendar_read, email_read, fetch_url, list_dir, read_file, shell, web_search, write_file
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
@@ -59,6 +70,10 @@ _ALL_TOOLS = {
     "fetch_url": fetch_url,
     "read_file": read_file,
     "list_dir": list_dir,
+    "write_file": write_file,
+    "shell": shell,
+    "calendar_read": calendar_read,
+    "email_read": email_read,
 }
 
 
@@ -71,9 +86,11 @@ def _tools_for_model(model: str, config: dict) -> dict:
     """Tool dispatch keyed on active model (A8 requirement) - config-driven, not
     hardcoded, so a future heavy/alt model can get a different set without
     touching this loop. No [tools.by_model] entry for a model means "all
-    tools" - today's only real caller, [models].primary, gets the full
-    read-only set. This is the seam A9's write tools (confirmation-gated) hook
-    into later without restructuring anything here."""
+    tools" - today's only real caller, [models].primary, gets the full set,
+    read and write-capable alike. The confirmation gate and no-credentials
+    rule in _call_tool() are what actually bound what a write-capable tool can
+    do, not tool-list membership - a future model with tighter permissions
+    would be scoped here instead."""
     allowed = config.get("tools", {}).get("by_model", {}).get(model)
     if allowed is None:
         return dict(_ALL_TOOLS)
@@ -86,23 +103,70 @@ def _log(record: dict) -> None:
         f.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **record}) + "\n")
 
 
+async def _drop_unavailable_tools(tools: dict) -> dict:
+    """Live-checks every tool exposing is_available() (web_search, shell,
+    calendar_read, email_read) and drops it from the offered set if it
+    returns False - offering a tool that can only fail wastes a turn on a
+    guaranteed error instead of the model just not seeing it. Checked fresh
+    every run_agent() call, not cached, so each starts working automatically
+    the moment its real dependency exists.
+
+    CLAUDE.md rule 10: every is_available() called here runs unconditionally
+    on every turn, for every gated tool - it must be cheap, read-only, and
+    incapable of starting or changing anything. tools/_outlook.py's first
+    version violated this (Dispatch() launches Outlook if not already
+    running) and was caught live, not in review - see that module and
+    CLAUDE.md's A9 entry for what it actually did on this machine."""
+    available = {}
+    for name, tool in tools.items():
+        check = getattr(tool, "is_available", None)
+        if check is None:
+            available[name] = tool
+            continue
+        if await check():
+            available[name] = tool
+        else:
+            _log({"stage": "tool_unavailable", "tool": name})
+    return available
+
+
 async def _call_tool(name: str, arguments: dict, tools: dict, cap: int) -> str:
     """Runs one tool call and logs it - arguments and result only, never
     anything a tool module might hold internally (e.g. tools/_search_tavily.py's
     API key never enters `arguments` or `result`, since it's not part of the
-    tool's schema or return value - see that module's docstring)."""
+    tool's schema or return value - see that module's docstring).
+
+    Two dispatcher-enforced gates happen here, before any tool code runs, both
+    real code rather than persona instructions (see agent_safety.py): the
+    no-credentials rule (every tool call's arguments are scanned), and the
+    confirmation gate for anything a tool module flags with
+    REQUIRES_CONFIRMATION = True. Execution itself is wrapped in a task
+    registered with agent_safety so the global abort hotkey can cancel it
+    mid-flight."""
     tool = tools.get(name)
     start = time.perf_counter()
+
     if tool is None:
-        result = f"Error: no tool named {name!r} is available."
-        ok = False
+        result, ok = f"Error: no tool named {name!r} is available.", False
+    elif (violation := agent_safety.credential_violation(arguments)) is not None:
+        result, ok = f"Refused: {violation}.", False
+        _log({"stage": "credential_refused", "tool": name, "reason": violation})
+    elif getattr(tool, "REQUIRES_CONFIRMATION", False) and not await agent_safety.confirm(
+        tool.describe(**arguments) if hasattr(tool, "describe") else f"{name}({arguments})"
+    ):
+        result, ok = "Declined by user - not executed.", False
     else:
+        loop = asyncio.get_running_loop()
+        task = asyncio.ensure_future(tool.execute(**arguments))
+        agent_safety.register_current_task(task, loop)
         try:
-            result = await tool.execute(**arguments)
-            ok = True
+            result, ok = await task, True
+        except asyncio.CancelledError:
+            result, ok = "Aborted by user (hotkey) - execution stopped mid-way.", False
         except Exception as exc:
-            result = f"Error running {name}: {exc}"
-            ok = False
+            result, ok = f"Error running {name}: {exc}", False
+        finally:
+            agent_safety.clear_current_task()
 
     original_chars = len(result)
     truncated = original_chars > cap
@@ -131,16 +195,16 @@ async def run_agent(messages: list[dict], model: str | None = None) -> AsyncIter
     config = _load_config()
     active_model = model or config["models"]["primary"]
     tools = _tools_for_model(active_model, config)
-    if "web_search" in tools and not await web_search.is_available():
-        # No live SearXNG instance and no Tavily key (PROMPTS.md A8, deferred
-        # pending real search infrastructure - see CLAUDE.md) - offering a tool
-        # that can only fail wastes a turn on a guaranteed error instead of
-        # just not being there.
-        del tools["web_search"]
-        _log({"stage": "web_search_unavailable", "backend": config.get("tools", {}).get("web_search", {}).get("backend")})
+    tools = await _drop_unavailable_tools(tools)
     specs = [t.spec() for t in tools.values()]
     cap = config.get("tools", {}).get("max_result_chars", 3000)
     think = config.get("thinking", {}).get("agent", True)
+
+    abort_cfg = config.get("tools", {}).get("abort_hotkey", {})
+    if abort_cfg.get("enabled", True):
+        installed = agent_safety.install_abort_hotkey(abort_cfg.get("hotkey", "ctrl+shift+x"))
+        if not installed:
+            _log({"stage": "abort_hotkey", "outcome": "not_installed"})
 
     messages = list(messages)
     if specs:

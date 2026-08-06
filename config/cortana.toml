@@ -297,6 +297,11 @@ rolling_min_recent_messages = 4      # always left raw/uncompressed, even if fil
 # project root, resolved + checked against path traversal in tools/_fs.py) -
 # add your own real working directories (CAD projects, etc.) here as needed.
 whitelist_dirs = ["config", "logs", "cad"]
+# PROMPTS.md A9 - write_file's whitelist, deliberately separate from the read
+# whitelist above (tools/_fs.py never assumes they're the same) and empty by
+# default: no directory is write-authorized until you explicitly add one here.
+# Read access to a directory doesn't imply write access to it.
+write_whitelist_dirs = []
 # Cap on any single tool result folded back into the conversation. A fetched
 # page can be thousands of tokens; [models].context_window is 16384 and
 # persona.md alone already measures 3295 real tokens (see [memory]'s comment
@@ -319,3 +324,54 @@ max_result_chars = 3000
 backend           = "searxng"
 max_results       = 5
 searxng_endpoint  = "http://localhost:8080"
+
+[tools.confirm]
+# services/brain/agent_safety.py's confirmation gate (PROMPTS.md A9) - real
+# dispatcher code, not a persona instruction (CLAUDE.md rule 4; A5a's padding
+# investigation measured negative persona constraints holding at roughly
+# two-thirds reliability, nowhere near a safety bar). Keyboard-only right now:
+# services/brain/agent.py runs standalone, with no wiring yet to
+# services/ears/pipeline.py's mic/STT path, so there's no way for a spoken
+# "yes" to reach this dispatcher - a real, current limitation, not a
+# placeholder. A confirmation that gets no answer within this long is treated
+# as declined, not left hanging forever.
+input_timeout_s = 120
+
+[tools.abort_hotkey]
+# Global (works without terminal focus) via the `keyboard` package's low-level
+# Windows hook - cancels whatever tool call is currently in flight
+# (services/brain/agent_safety.py).
+enabled = true
+hotkey  = "ctrl+shift+x"
+
+[tools.shell]
+# PROMPTS.md A9 - runs a whitelisted command inside a DEDICATED, isolated WSL2
+# distro (tools/shell.py), never the Windows host directly and never the
+# machine's regular/default WSL distro (that one is used for other things and
+# its automount can't safely be disabled). See CLAUDE.md's A9 entry for the
+# exact `wsl --import` + wsl.conf setup steps. is_available() verifies live,
+# every call, that this distro exists AND /mnt/c is actually absent inside it
+# - stays dormant (not offered to the model) until both are true, same
+# self-gating pattern as [tools.web_search].
+distro       = "CortanaShell"
+# Conservative on purpose - a contained shell is still a shell. Expand
+# deliberately as real needs come up, not speculatively.
+whitelist    = ["ls", "cat", "echo", "pwd", "date", "df", "whoami", "wc"]
+sandbox_cwd  = "/root"
+timeout_s    = 15
+
+[tools.calendar]
+# tools/calendar_read.py - read-only (no confirmation gate; CLAUDE.md rule 4
+# is about anything that deletes/sends/spends/unlocks, not reads). Dormant:
+# no Outlook installed on this machine (checked via the registry, not
+# assumed) - see tools/_outlook.py for the zero-credential rationale (COM
+# automation against whatever account is already signed into the desktop
+# app - she never receives, stores, or types a password/token) and the
+# "not verified live" caveat, since there's nothing here to test it against.
+backend = "outlook"
+
+[tools.email]
+# tools/email_read.py - same backend, same dormancy, same caveat as
+# [tools.calendar] above.
+backend    = "outlook"
+max_items  = 10

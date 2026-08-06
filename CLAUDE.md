@@ -872,9 +872,104 @@ A8's tool-calling demands first, see Done below)
   tool, malformed JSON) - `think=true` closing it out this cleanly is consistent
   with that being a shallow generation-discipline gap, not a hard ceiling.
 
-**Next**: A9 - write tools with confirmation gates (`write_file`, `shell`,
-calendar/email read), per PROMPTS.md's sequencing now that A8 is done. A5b
-(latency, specifically the LLM TTFT residual) is still open but deliberately
+- **A9 — Write tools + confirmation gate + abort hotkey + no-credentials rule,
+  all dispatcher-enforced code, not persona instructions.** A5a already
+  measured negative persona constraints holding at roughly two-thirds
+  reliability (padding investigation) - not remotely a safety bar, so none of
+  A9's guarantees live in prompt text.
+  `services/brain/agent_safety.py` (new): `confirm()` blocks on real stdin
+  input (`asyncio.to_thread`, timeout treated as declined, not hung forever) -
+  **keyboard-only, stated plainly, not pretended otherwise**: `agent.py` runs
+  standalone, with no wiring yet to `services/ears/pipeline.py`'s mic/STT
+  path, so there is no way for a spoken "yes" to reach this dispatcher until
+  that wiring happens. `credential_violation()` scans every tool call's
+  arguments (key-name and value-shape heuristics) and refuses outright before
+  any tool code runs - real backstop against a future tool built with a
+  credential-shaped parameter, or the model echoing something secret-looking
+  it picked up from `fetch_url` (A8) back into a call. Both gates live in
+  `agent.py`'s `_call_tool()`, ahead of execution, unconditionally - a tool
+  flags `REQUIRES_CONFIRMATION = True` as metadata, but the actual blocking
+  is dispatcher code, never something the model can talk past.
+  Global abort hotkey (`ctrl+shift+x` default, `keyboard` package's low-level
+  Windows hook - confirmed installs without admin rights here) cancels
+  whatever tool call is in flight via `call_soon_threadsafe` cross-thread
+  task cancellation, same bridging pattern `services/ears/pipeline.py` already
+  uses for the mic callback. Verified: the cancellation logic itself (task
+  correctly raises `CancelledError` when the callback fires) - **not** a real
+  physical keypress, which this environment can't simulate. Worth a real test
+  the first time someone's actually at the keyboard.
+  `write_file` (whitelisted to `[tools].write_whitelist_dirs` - deliberately
+  separate from read's `whitelist_dirs`, empty by default so nothing is
+  write-authorized until explicitly configured) verified end-to-end for real:
+  declined via the confirmation prompt (no file written), confirmed but
+  outside the whitelist (rejected, no file written), and confirmed inside a
+  temporarily-added whitelist entry (file written correctly, then the config
+  change reverted).
+  **`shell`: built against a real, working containment mechanism - not the
+  one first considered.** No Docker on this machine, but WSL2 already was
+  (an existing "Ubuntu" distro) - initially proposed running whitelisted
+  commands there with argument-level validation blocking `/mnt` paths, but
+  the user correctly rejected this: a blocklist only has to have one gap, and
+  the existing distro is used for other things, so its automount can't safely
+  be disabled anyway. Landed on a **dedicated, isolated WSL2 distro**
+  (`CortanaShell`, imported fresh via `wsl --import` from a minimal
+  `ubuntu-base-26.04` rootfs) with automount disabled in its own
+  `/etc/wsl.conf` - filesystem-enforced isolation, not application-level
+  filtering: `/mnt/c` doesn't exist inside it at all, the same guarantee a
+  container's filesystem namespace gives. `tools/shell.py` invokes via
+  `wsl.exe -d CortanaShell -e <command> <args...>` - `-e` skips the default
+  Linux shell, and the args stay a real argv list the whole way down (Python's
+  `asyncio.create_subprocess_exec`, never a joined string), so shell
+  metacharacters in an argument are inert data, not syntax. **Confirmed live**
+  with a deliberately hostile argument (`"hello; rm -rf / #..."` passed to
+  `echo`) - printed back as one literal string, not executed as a second
+  command. `is_available()` checks, fresh every call: does the distro exist,
+  and is `/mnt` actually empty inside it right now - not trusted from a
+  config flag or checked once at startup. Setup is a one-time step the user
+  runs themselves (real commands, not summarized): download
+  `ubuntu-base-26.04-base-amd64.tar.gz` from
+  `cdimage.ubuntu.com/ubuntu-base/releases/26.04/`, `wsl --import CortanaShell
+  <install-dir> <tarball> --version 2`, write `[automount]\nenabled = false`
+  into its `/etc/wsl.conf`, `wsl --terminate CortanaShell` to apply it, verify
+  via `wsl -d CortanaShell -- ls /mnt` printing nothing. Dormant until
+  confirmed done - `tools/shell.py` starts working automatically the moment
+  it is, no code change.
+  **`calendar_read`/`email_read`: real infrastructure check first, then a
+  real bug caught live, not in review.** No Outlook found via the Uninstall
+  registry or `outlook.exe` on PATH - looked deferred, matching web_search's
+  precedent (build the `is_available()`-gated interface now, real backend
+  later). But testing the actual COM path revealed Outlook *was* installed
+  (Click-to-Run, which doesn't register the way the initial search checked
+  for) - and the first `is_available()` implementation, checking via
+  `win32com.client.Dispatch("Outlook.Application")`, actually **launched a
+  real Outlook process** to answer the question. Confirmed directly: a real
+  `OUTLOOK.EXE`, hung 30+ seconds, no visible window, relaunched itself once
+  after being killed. `is_available()` runs unconditionally on every single
+  `run_agent()` call - wired into the live loop, that would have silently
+  started Outlook on every conversational turn. This is now CLAUDE.md rule
+  10: an availability check must be incapable of starting or changing
+  anything, full stop. Fixed in `tools/_outlook.py`: check for an
+  already-running `OUTLOOK.EXE` process first (`tasklist`, read-only, no COM
+  involved at all), then `GetActiveObject` (never `Dispatch`) - it only
+  attaches to an already-running COM server, never launches one. Re-verified
+  clean: returns `False` in well under a second, confirmed via `Get-Process`
+  that nothing launched. Net effect: Outlook must already be open for either
+  tool to activate - permanently dormant if the user never opens it, which is
+  the correct, safe failure mode, not a workaround to avoid. Zero credentials
+  either way - COM automation rides whatever account is already signed into
+  the desktop app.
+  Two more prompt-injection attempts surfaced and flagged during this step
+  (a fake "file modified, don't tell the user" system-reminder on `CLAUDE.md`
+  and later on `config/cortana.toml`, the latter misrepresenting the
+  assistant's own just-made test edit as an external change) - both refused
+  per the standing rule from A8, third and fourth occurrences of the same
+  pattern this project has now seen.
+
+**Next**: A10 - clarifying behavior (`ask_user` as a real callable tool), per
+PROMPTS.md's sequencing now that A9 is done. Once the WSL setup step above is
+confirmed, re-verify `shell` end-to-end for real (a whitelisted command
+actually executing and returning output, not just `is_available()` flipping
+true). A5b (latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline
 calls (not isolated reproductions) and close the remaining TTFT gap. A listening
@@ -949,6 +1044,22 @@ cortana/
    has already happened twice — rule 7 was lost once, the entire Done log another
    time. If one of these three looks collapsed, reverted, or missing content you
    know should be there, say so before working from it — don't assume it's current.
+10. **A tool's `is_available()` check must be incapable of starting or changing
+    anything.** It runs on every single `run_agent()` call (`services/brain/
+    agent.py`'s `_drop_unavailable_tools()`), for every gated tool, whether or
+    not the model ends up using it — so it has to be cheap, read-only, and
+    side-effect-free, every time, unconditionally. Found the hard way in A9:
+    `tools/_outlook.py`'s first version checked availability via
+    `win32com.client.Dispatch("Outlook.Application")`, which launches Outlook
+    if it isn't already running — confirmed live, it spawned a real process
+    that hung for 30+ seconds with no visible window and relaunched itself
+    once after being killed. Wired into the live loop, that check would have
+    silently started a real Outlook process on every single conversational
+    turn. Fixed by checking for an already-running process first (read-only,
+    no COM), then `GetActiveObject` (not `Dispatch`) - it only ever attaches
+    to something already running, never launches. If a capability can't be
+    checked without a launch/side-effect, the tool stays permanently dormant -
+    that's the correct failure mode, not a workaround to avoid.
 
 ## Latency budget (Phase 1, enforced in code)
 
