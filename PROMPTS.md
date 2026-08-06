@@ -8,12 +8,12 @@ commit, update `CLAUDE.md`, move on.
 
 Don't skip ahead. Don't bundle two steps into one prompt.
 
-## Progress (as of 2026-08-05)
+## Progress (as of 2026-08-06)
 
 **Done:** A0, A1, A2, A3, A4, A5a (persona), A6, A7 (memory), A8 (agent loop + tools,
-web_search deferred), A9 (write tools + confirmation gate + abort hotkey, shell
-deferred pending a one-time WSL setup step - see below). A5b (latency) is partially
-done and deliberately paused.
+web_search deferred), A9 (write tools + confirmation gate + abort hotkey + shell,
+fully verified end-to-end - see below). A5b (latency) is partially done and
+deliberately paused.
 **Next:** A10 — Clarifying behavior.
 
 Two known limitations discovered during A5a, recorded so they aren't re-chased:
@@ -50,25 +50,38 @@ dependency so a failure means the loop is broken rather than the network): "read
 config file and tell me what the wake threshold is" — verified, see CLAUDE.md's A8
 entry for what it took to get reliable (not the first thing tried).
 
-**A9: `write_file`, `shell`, `calendar_read`, `email_read` built. `shell` is dormant
-pending a one-time setup step outside this repo** (a dedicated, isolated WSL2 distro -
-see CLAUDE.md's A9 entry for the exact commands and why the existing default distro
-can't be reused). Confirmation gate and the no-credentials rule are both real code in
-`services/brain/agent_safety.py`, not persona instructions - A5a already measured
-negative persona constraints holding at roughly two-thirds reliability, not a safety
-bar. Confirmation is keyboard-only for now: `agent.py` runs standalone, with no wiring
-to the mic/STT path yet, so there's no way for a spoken "yes" to reach the dispatcher -
-stated plainly, not pretended otherwise. Global abort hotkey (`ctrl+shift+x` by
-default) verified functionally (task cancellation logic confirmed live), though a real
-physical keypress wasn't tested in this environment - worth a real check when someone's
-at the keyboard. A live bug surfaced and fixed during this step, now a standing rule
-(CLAUDE.md #10): an `is_available()` check must never be capable of starting or
-changing anything, since it runs on every single turn - `tools/_outlook.py`'s first
-version used a COM call that actually launches Outlook if it isn't already running,
-caught by it doing exactly that during testing (a real process, hung 30+ seconds, no
-visible window). Fixed to a read-only running-process check first, then `GetActiveObject`
-(never `Dispatch`) - Outlook must already be running for calendar_read/email_read to
-activate at all, permanently dormant otherwise, which is the correct failure mode here.
+**A9: `write_file`, `shell`, `calendar_read`, `email_read` built.** Confirmation gate
+and the no-credentials rule are both real code in `services/brain/agent_safety.py`,
+not persona instructions - A5a already measured negative persona constraints holding
+at roughly two-thirds reliability, not a safety bar. Confirmation is keyboard-only for
+now: `agent.py` runs standalone, with no wiring to the mic/STT path yet, so there's no
+way for a spoken "yes" to reach the dispatcher - stated plainly, not pretended
+otherwise. Global abort hotkey (`ctrl+shift+x` by default) verified functionally (task
+cancellation logic confirmed live), though a real physical keypress wasn't tested in
+this environment - worth a real check when someone's at the keyboard.
+
+Two live bugs surfaced and fixed during this step, both now standing rules or
+practices, not just one-off patches:
+- **CLAUDE.md rule #10**: an `is_available()` check must never be capable of starting
+  or changing anything, since it runs on every single turn - `tools/_outlook.py`'s
+  first version used a COM call that actually launches Outlook if it isn't already
+  running, caught by it doing exactly that during testing (a real process, hung 30+
+  seconds, no visible window, relaunched once after being killed). Fixed to a
+  read-only running-process check first, then `GetActiveObject` (never `Dispatch`) -
+  Outlook must already be running for calendar_read/email_read to activate at all,
+  permanently dormant otherwise, which is the correct failure mode.
+- **`shell`'s `is_available()` had its own bug, caught after the WSL setup step was
+  done and it still wouldn't flip true.** WSL creates `/mnt/c` as an empty stub
+  directory unconditionally, regardless of the automount setting - the original check
+  (`ls /mnt`, anything listed = still mounted) could never return true even with
+  isolation genuinely working. Confirmed isolation was fine the whole time by checking
+  for actual content (`ls /mnt/c/Windows` failed, `mount` showed no `drvfs` entries) -
+  fixed the check to test for emptiness at `/mnt/c` specifically instead. Full pipeline
+  then verified for real: a whitelisted `echo` through the real dispatcher (confirmed,
+  executed inside `CortanaShell`, correct output), a decline (`whoami`, not executed),
+  and `rm -rf /` - confirmed by the user at the prompt, still blocked by the whitelist
+  inside `execute()`, proving the confirmation gate and the whitelist are independent
+  layers. See CLAUDE.md's A9 entry for the full diagnostic path (it wasn't obvious).
 
 ---
 

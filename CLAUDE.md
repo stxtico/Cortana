@@ -964,12 +964,36 @@ A8's tool-calling demands first, see Done below)
   assistant's own just-made test edit as an external change) - both refused
   per the standing rule from A8, third and fourth occurrences of the same
   pattern this project has now seen.
+  **`shell` fully verified end-to-end once `CortanaShell` was set up - and a
+  second real bug caught in the process, this time in the verification logic
+  itself, not the tool it was checking.** `is_available()`'s first version
+  (`ls /mnt`, checking whether anything was listed) returned `False`
+  permanently, even with automount genuinely disabled and confirmed correctly
+  in `/etc/wsl.conf` (byte-verified, fresh reimport, full `wsl --shutdown` +
+  8s wait per Microsoft's documented "8 second rule" - none of it moved the
+  result). Root cause, found by checking whether `/mnt/c` actually contained
+  real content rather than trusting the listing: WSL unconditionally creates
+  `/mnt/c`, `/mnt/wsl`, `/mnt/wslg` as empty stub directories regardless of
+  the automount setting - `ls /mnt` always lists them whether or not anything
+  is actually mounted there. Confirmed directly: `ls /mnt/c/Windows` failed
+  with "No such file or directory", and `mount` showed zero `drvfs` entries -
+  isolation was correct the entire time, the check was just reading the wrong
+  signal. Fixed to `ls -A /mnt/c` and checking for emptiness instead - a real
+  Windows C: mount is never empty in practice, so "empty" is a reliable
+  unmounted signal without needing to parse `mount`'s output format. Re-ran
+  clean: `is_available()` correctly flips to `true`.
+  With that fixed, full pipeline verified for real, not just the gate in
+  isolation: a whitelisted command (`echo`) through the real dispatcher -
+  confirmation prompt shown, confirmed, executed inside `CortanaShell`,
+  correct output returned (exit 0). A decline (`whoami`, answered "n") -
+  correctly not executed. And, the sharpest test: `rm -rf /`, confirmed by
+  the user at the prompt, still rejected by the whitelist check inside
+  `execute()` - proof the confirmation gate and the whitelist are independent
+  layers, not one gate that a "yes" bypasses entirely.
 
 **Next**: A10 - clarifying behavior (`ask_user` as a real callable tool), per
-PROMPTS.md's sequencing now that A9 is done. Once the WSL setup step above is
-confirmed, re-verify `shell` end-to-end for real (a whitelisted command
-actually executing and returning output, not just `is_available()` flipping
-true). A5b (latency, specifically the LLM TTFT residual) is still open but deliberately
+PROMPTS.md's sequencing now that A9 is fully done, `shell` included. A5b
+(latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline
 calls (not isolated reproductions) and close the remaining TTFT gap. A listening

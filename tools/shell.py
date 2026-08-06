@@ -4,14 +4,16 @@ never give an autonomous loop unrestricted shell on the host - this isn't that.
 
 Isolation is filesystem-enforced, not application-level filtering: the
 configured distro ([tools.shell].distro) has automount disabled in its
-/etc/wsl.conf, so /mnt/c (and the rest of the Windows filesystem) doesn't
-exist inside it at all - there's nothing for a command to reach even if it
-tried, the same guarantee a container's filesystem namespace would give, not a
-blocklist that only has to have one gap. is_available() verifies this live,
-every call, not just once at setup: the distro must exist AND /mnt/c must be
-provably absent, checked fresh each time rather than trusted from a config
-flag. See CLAUDE.md's A9 entry for the exact `wsl --import` + wsl.conf setup
-steps (run by the user, not provisioned here).
+/etc/wsl.conf, so nothing is ever mounted at /mnt/c inside it (the directory
+itself still exists as a WSL-created stub, always empty - see is_available()'s
+docstring for why that distinction matters) - there's nothing for a command to
+reach even if it tried, the same guarantee a container's filesystem namespace
+would give, not a blocklist that only has to have one gap. is_available()
+verifies this live, every call, not just once at setup: the distro must
+exist AND /mnt/c must be provably empty right now, checked fresh each time
+rather than trusted from a config flag. See CLAUDE.md's A9 entry for the
+exact `wsl --import` + wsl.conf setup steps (run by the user, not
+provisioned here).
 
 Commands run via `wsl.exe -d <distro> -e <command> <args...>` - the `-e` flag
 executes directly without invoking the default Linux shell, and both the
@@ -89,15 +91,26 @@ async def is_available() -> bool:
     """Live, every call - not a one-time-at-startup latch (same reasoning as
     tools/_search_searxng.py's check): the distro must exist, and /mnt/c must
     be provably absent inside it right now, not assumed from the fact setup
-    was done at some point in the past."""
+    was done at some point in the past.
+
+    Checks `ls -A /mnt/c` is empty, NOT whether `/mnt/c` exists as a directory
+    entry - the first version of this check tested the latter and was wrong
+    in a way that made it permanently unusable: WSL creates /mnt/c, /mnt/wsl,
+    /mnt/wslg as empty stub directories unconditionally, regardless of the
+    automount setting, so `ls /mnt` always lists them whether or not automount
+    ever actually mounted anything there. Confirmed live (CLAUDE.md's A9
+    entry): with automount correctly disabled, `ls /mnt/c` returns nothing and
+    `mount` shows no drvfs entry at all - a real Windows C: mount is never
+    empty in practice, so "empty" is a reliable, simple signal that nothing is
+    actually mounted, without needing to parse `mount`'s output format."""
     config = _load_config()
     distro = config.get("distro", "")
     if not distro:
         return False
-    code, stdout, _ = await _run_wsl(distro, ["ls", "/mnt"], timeout_s=5.0)
+    code, stdout, _ = await _run_wsl(distro, ["ls", "-A", "/mnt/c"], timeout_s=5.0)
     if code != 0:
-        return False  # distro doesn't exist, or wsl.exe itself failed
-    return stdout.strip() == ""  # anything listed under /mnt means automount is still on
+        return True  # /mnt/c doesn't even exist as a path - can't be mounted
+    return stdout.strip() == ""  # exists but empty = nothing actually mounted there
 
 
 def describe(command: str, args: list[str] | None = None) -> str:
