@@ -383,3 +383,38 @@ backend = "outlook"
 # [tools.calendar] above.
 backend    = "outlook"
 max_items  = 10
+
+[daemon]
+# PROMPTS.md A11 - services/daemon/daemon.py, a genuinely separate process
+# from the conversation loop. Coexistence decided before building (see
+# CLAUDE.md's A11 entry for the full reasoning): both processes are just
+# HTTP clients to the same already-running Ollama server, no second model
+# load; self-interruption is prevented via services/voice/playback_state.py,
+# a tiny cross-process file services/voice/tts.py writes and this daemon
+# reads before ever announcing anything.
+poll_interval_s = 30
+# Default LOW on purpose (explicit instruction, not a guess): too quiet is
+# recoverable by lowering the bar later; too noisy gets the whole feature
+# turned off within a week and none of it gets used again.
+rate_limit_per_hour = 2
+quiet_hours_start = "22:00"
+quiet_hours_end   = "08:00"
+
+[daemon.timers]
+# tools/set_timer.py (agent-callable) writes here; services/daemon/timers.py
+# polls the same file - the one real, working trigger source today, since it
+# has no external dependency (calendar/email below both do).
+store_path = "daemon_store/timers.json"
+
+[daemon.calendar]
+# services/daemon/calendar_trigger.py - dormant until Outlook is installed
+# AND already running, same is_available() contract as [tools.calendar].
+lookahead_minutes = 20
+
+[daemon.email]
+# services/daemon/email_trigger.py - dormant, same as [daemon.calendar].
+# "A rule" is a simple substring match against subject or sender, both empty
+# by default so nothing matches (and nothing surfaces) until you add one -
+# same "not authorized until configured" spirit as write_file's whitelist.
+subject_contains = []
+from_contains    = []

@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
+from services.voice import playback_state
 from services.voice.engine import TTSEngine
 from services.voice.normalize import normalize
 
@@ -117,12 +118,14 @@ def _mark_playback_started() -> None:
     global _response_playback_active, _response_playback_started_at
     _response_playback_active = True
     _response_playback_started_at = time.perf_counter()
+    playback_state.mark_started()  # PROMPTS.md A11 - the cross-process signal services/daemon/daemon.py reads
 
 
 def _mark_playback_stopped() -> None:
     global _response_playback_active, _response_playback_started_at
     _response_playback_active = False
     _response_playback_started_at = None
+    playback_state.mark_stopped()
 
 
 def response_playback_elapsed_s() -> float | None:

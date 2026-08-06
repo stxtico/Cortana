@@ -49,7 +49,7 @@ from pathlib import Path
 
 from services.brain import agent_safety
 from services.brain import client as brain_client
-from tools import ask_user, calendar_read, email_read, fetch_url, list_dir, read_file, shell, web_search, write_file
+from tools import ask_user, calendar_read, email_read, fetch_url, list_dir, read_file, set_timer, shell, web_search, write_file
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
@@ -81,6 +81,7 @@ _ALL_TOOLS = {
     "calendar_read": calendar_read,
     "email_read": email_read,
     "ask_user": ask_user,
+    "set_timer": set_timer,
 }
 
 
