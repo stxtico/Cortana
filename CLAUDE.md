@@ -991,8 +991,48 @@ A8's tool-calling demands first, see Done below)
   `execute()` - proof the confirmation gate and the whitelist are independent
   layers, not one gate that a "yes" bypasses entirely.
 
-**Next**: A10 - clarifying behavior (`ask_user` as a real callable tool), per
-PROMPTS.md's sequencing now that A9 is fully done, `shell` included. A5b
+- **A10 — `ask_user` as a real callable tool, plus a real cross-module bug it
+  exposed.** Genuinely "returned through TTS," not just printed: `execute()`
+  speaks the question aloud through the same engine every response uses
+  (`services/voice/tts.py`), verified live (real XTTS synthesis and
+  playback). The answer side stays honestly keyboard-only, same reasoning as
+  A9's confirmation gate - `agent.py` has no wiring yet to
+  `services/ears/pipeline.py`'s mic/STT path.
+  `persona.md` governs *when* asking is right (irreversible actions, missing
+  filenames/dimensions, genuine ambiguity - guessing is the failure there,
+  not asking); the one-question-per-turn *cap* is enforced in `agent.py`'s
+  `run_agent()` by counting real calls, not trusted to the model - consistent
+  with A9's whole premise (negative persona constraints measured at roughly
+  two-thirds reliability). Verified live and adversarially: a genuinely
+  double-ambiguous request ("write a settings file with the print
+  temperature and filename") got the model trying to ask again 6 more
+  times after the first real question - every single one correctly blocked
+  by the dispatcher (`ask_user_cap` logged at counts 2 through 7), never
+  reaching a second real execution. The model's own fallback behavior when
+  blocked wasn't graceful (it kept trying to ask rather than proceeding on
+  its best judgment, eventually just repeating the question as prose) - a
+  model-reliability finding in the same family as A8/A9's (mechanism holds,
+  synthesis quality is the separate, already-documented soft spot), not a
+  dispatcher bug.
+  **Real bug, found live, not obvious from either module in isolation**: the
+  first full-loop test produced an `EOFError: EOF when reading a line` inside
+  `ask_user.execute()`'s `input()` call - reproducible, but the *isolated*
+  tool worked perfectly every time. Root cause was in a completely different
+  tool: `tools/shell.py`'s `_run_wsl()` subprocess call (used by
+  `is_available()`, which runs on every single turn per rule 10) didn't set
+  `stdin=DEVNULL`, so it inherited the parent process's stdin handle by
+  default - and silently consumed/closed the piped input meant for
+  `ask_user`'s later, unrelated `input()` call. Fixed in `_run_wsl()`, and
+  the same latent issue fixed defensively in `tools/_outlook.py`'s
+  `tasklist.exe` call (grepped the whole tree for other
+  `create_subprocess_exec` call sites - only those two existed, both now
+  explicit). Re-verified clean after the fix: real question spoken, real
+  answer captured, correctly used in the final response (asked material,
+  got "PETG," answered "230 degrees Celsius" - genuinely correct for that
+  filament, not a coincidence like A6's "0.5" guess).
+
+**Next**: A11 - the proactive daemon (`services/daemon/`), per PROMPTS.md's
+sequencing now that A10 is done. A5b
 (latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline

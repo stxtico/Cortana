@@ -77,7 +77,14 @@ async def _run_wsl(distro: str, argv: list[str], cwd: str | None = None, timeout
     if cwd:
         cmd += ["--cd", cwd]
     cmd += ["-e", *argv]
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    # stdin=DEVNULL, not left to default (inherit) - found live, the hard way
+    # (CLAUDE.md's A10 entry): an inherited stdin handle let this subprocess
+    # silently consume/close piped input meant for tools/ask_user.py's later
+    # input() call, surfacing as an EOFError with no obvious connection to
+    # this module at all.
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
     except asyncio.TimeoutError:

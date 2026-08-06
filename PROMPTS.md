@@ -12,9 +12,9 @@ Don't skip ahead. Don't bundle two steps into one prompt.
 
 **Done:** A0, A1, A2, A3, A4, A5a (persona), A6, A7 (memory), A8 (agent loop + tools,
 web_search deferred), A9 (write tools + confirmation gate + abort hotkey + shell,
-fully verified end-to-end - see below). A5b (latency) is partially done and
-deliberately paused.
-**Next:** A10 — Clarifying behavior.
+fully verified end-to-end), A10 (`ask_user`, verified end-to-end - see below). A5b
+(latency) is partially done and deliberately paused.
+**Next:** A11 — Proactive daemon.
 
 Two known limitations discovered during A5a, recorded so they aren't re-chased:
 
@@ -82,6 +82,19 @@ practices, not just one-off patches:
   and `rm -rf /` - confirmed by the user at the prompt, still blocked by the whitelist
   inside `execute()`, proving the confirmation gate and the whitelist are independent
   layers. See CLAUDE.md's A9 entry for the full diagnostic path (it wasn't obvious).
+
+**A10: `ask_user` built and verified live.** Genuinely spoken through the real TTS
+engine, not printed-and-called-done - the answer side is honestly keyboard-only for
+now (same gap as A9's confirmation gate: `agent.py` has no mic/STT wiring yet). The
+one-question-per-turn cap is dispatcher-enforced (`agent.py`'s `run_agent()`), not
+trusted to persona.md alone - proven under adversarial testing, not just asserted: a
+deliberately double-ambiguous request made the model try to ask again 6 more times
+after the first real question, and every one was correctly blocked. A real bug
+surfaced along the way, in a different module than the one being tested:
+`tools/shell.py`'s WSL subprocess call didn't set `stdin=DEVNULL`, so it silently
+consumed piped input meant for `ask_user`'s later `input()` call, surfacing as an
+unrelated-looking `EOFError`. Fixed there and defensively in `tools/_outlook.py`'s
+subprocess call too. See CLAUDE.md's A10 entry for the full trace.
 
 ---
 

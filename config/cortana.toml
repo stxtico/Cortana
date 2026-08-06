@@ -312,6 +312,11 @@ write_whitelist_dirs = []
 # agent.py's dispatcher, not per-tool, so every tool (including future ones)
 # gets it automatically.
 max_result_chars = 3000
+# PROMPTS.md A10 - real dispatcher-enforced cap (services/brain/agent.py's
+# run_agent()), not left to persona.md's policy alone. persona.md governs
+# *when* asking is right; this bounds *how many* regardless of what the
+# model decides mid-turn.
+ask_user_max_per_turn = 1
 
 [tools.web_search]
 # "tavily" (needs TAVILY_API_KEY in .env - see .env.example) or "searxng"
@@ -362,16 +367,19 @@ timeout_s    = 15
 
 [tools.calendar]
 # tools/calendar_read.py - read-only (no confirmation gate; CLAUDE.md rule 4
-# is about anything that deletes/sends/spends/unlocks, not reads). Dormant:
-# no Outlook installed on this machine (checked via the registry, not
-# assumed) - see tools/_outlook.py for the zero-credential rationale (COM
-# automation against whatever account is already signed into the desktop
-# app - she never receives, stores, or types a password/token) and the
-# "not verified live" caveat, since there's nothing here to test it against.
+# is about anything that deletes/sends/spends/unlocks, not reads). Dormant
+# until Outlook is both installed AND already running (rule 10 - the
+# availability check can never launch it itself, tools/_outlook.py). Outlook
+# turned out to already be installed here (Click-to-Run, missed by an initial
+# Uninstall-registry search) but wasn't running - see CLAUDE.md's A9 entry.
+# Zero-credential COM automation against whatever account is already signed
+# into the desktop app - she never receives, stores, or types a password/
+# token. The actual read path (execute()) is still not verified live - it
+# needs Outlook open to activate at all, which it wasn't during A9.
 backend = "outlook"
 
 [tools.email]
-# tools/email_read.py - same backend, same dormancy, same caveat as
+# tools/email_read.py - same backend, same dormancy, same caveats as
 # [tools.calendar] above.
 backend    = "outlook"
 max_items  = 10

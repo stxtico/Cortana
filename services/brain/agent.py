@@ -31,6 +31,12 @@ instruction (CLAUDE.md rule 4, and A5a's padding investigation found negative
 persona constraints hold at roughly two-thirds reliability - nowhere near a
 safety bar). agent_safety.py also enforces the no-credentials rule on every
 tool call's arguments, and owns the global abort hotkey.
+
+ask_user (A10) gets the same "don't trust the prompt" treatment for its one
+numeric constraint: persona.md's one-question-per-turn policy is real
+guidance for *when* asking is right, but the cap itself is enforced here in
+run_agent() by counting real ask_user calls this turn, not left to the model
+to self-limit.
 """
 
 import asyncio
@@ -43,7 +49,7 @@ from pathlib import Path
 
 from services.brain import agent_safety
 from services.brain import client as brain_client
-from tools import calendar_read, email_read, fetch_url, list_dir, read_file, shell, web_search, write_file
+from tools import ask_user, calendar_read, email_read, fetch_url, list_dir, read_file, shell, web_search, write_file
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
@@ -74,6 +80,7 @@ _ALL_TOOLS = {
     "shell": shell,
     "calendar_read": calendar_read,
     "email_read": email_read,
+    "ask_user": ask_user,
 }
 
 
@@ -206,6 +213,9 @@ async def run_agent(messages: list[dict], model: str | None = None) -> AsyncIter
         if not installed:
             _log({"stage": "abort_hotkey", "outcome": "not_installed"})
 
+    ask_user_max = config.get("tools", {}).get("ask_user_max_per_turn", 1)
+    ask_user_count = 0
+
     messages = list(messages)
     if specs:
         if messages and messages[0].get("role") == "system":
@@ -242,6 +252,18 @@ async def run_agent(messages: list[dict], model: str | None = None) -> AsyncIter
             name = fn.get("name", "")
             raw_args = fn.get("arguments", {})
             arguments = raw_args if isinstance(raw_args, dict) else json.loads(raw_args or "{}")
+
+            if name == "ask_user":
+                # Real dispatcher-enforced cap (A10) - persona.md's "one
+                # clarifying question per turn" is guidance for *when* asking
+                # is right, not something the model is trusted to self-limit.
+                ask_user_count += 1
+                if ask_user_count > ask_user_max:
+                    result = "Already asked a clarifying question this turn - proceed with your best judgment instead of asking again."
+                    _log({"stage": "ask_user_cap", "outcome": "blocked", "count": ask_user_count})
+                    messages.append({"role": "tool", "name": name, "content": result})
+                    continue
+
             result = await _call_tool(name, arguments, tools, cap)
             messages.append({"role": "tool", "name": name, "content": result})
 

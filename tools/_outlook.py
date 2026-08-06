@@ -29,9 +29,12 @@ import asyncio
 
 
 async def _outlook_process_running() -> bool:
+    # stdin=DEVNULL explicitly - see tools/shell.py's _run_wsl() for the real
+    # bug this pattern caused elsewhere (an inherited stdin handle silently
+    # consuming input meant for a later, unrelated input() call).
     proc = await asyncio.create_subprocess_exec(
         "tasklist.exe", "/FI", "IMAGENAME eq OUTLOOK.EXE", "/NH",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
     )
     stdout, _ = await proc.communicate()
     return b"OUTLOOK.EXE" in stdout.upper()
