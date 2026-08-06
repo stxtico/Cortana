@@ -1030,6 +1030,30 @@ A8's tool-calling demands first, see Done below)
   answer captured, correctly used in the final response (asked material,
   got "PETG," answered "230 degrees Celsius" - genuinely correct for that
   filament, not a coincidence like A6's "0.5" guess).
+  **`is_available()`'s emptiness check turned out to be a second, subtler
+  version of the exact bug it was fixed to avoid - both prior versions
+  inferred mount state from `/mnt`'s directory contents instead of asking the
+  kernel directly.** User set up `CortanaShell`, confirmed isolation by hand
+  (`mount` showed zero `drvfs` entries - the genuine ground truth), and found
+  `/mnt/c` itself was an empty leftover directory from the distro's first
+  boot, since removed. The `ls -A /mnt/c` emptiness check (this session's
+  prior fix) happened to return the right answer either way (empty or
+  missing both read as "unmounted"), but it was still an inference about
+  what a directory happens to contain, not a check of whether anything is
+  actually mounted - the same category of mistake as the original `ls /mnt`
+  version, just one layer more careful. Rewritten to check `mount`'s own
+  output for a `drvfs` entry - `drvfs` is the filesystem type WSL uses for
+  every Windows-drive mount, so its total absence is a direct answer, not a
+  proxy for one. Re-verified the full A9 pipeline against the confirmed-clean
+  distro: `is_available()` → `true`; a whitelisted `echo` through the real
+  dispatcher → confirmed, executed, correct output; a decline (`whoami`) →
+  correctly not executed; and a combined hostile-argument test (`cat` on
+  `"/mnt/c/Windows/win.ini; rm -rf / #"`, confirmed by the user at the
+  prompt) → `cat: '/mnt/c/Windows/win.ini; rm -rf / #': No such file or
+  directory` - the entire string, `;`/`#` included, stayed one literal
+  filename argument (never shell syntax) *and* the Windows path genuinely
+  doesn't exist inside the distro, both defenses holding at once against a
+  single adversarial input.
 
 **Next**: A11 - the proactive daemon (`services/daemon/`), per PROMPTS.md's
 sequencing now that A10 is done. A5b

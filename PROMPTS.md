@@ -82,6 +82,13 @@ practices, not just one-off patches:
   and `rm -rf /` - confirmed by the user at the prompt, still blocked by the whitelist
   inside `execute()`, proving the confirmation gate and the whitelist are independent
   layers. See CLAUDE.md's A9 entry for the full diagnostic path (it wasn't obvious).
+  That "test for emptiness at /mnt/c" fix was itself still an inference, not a direct
+  check - later rewritten to check `mount`'s own output for a `drvfs` entry instead
+  (the real ground truth) after the user found `/mnt/c` was an empty leftover
+  directory the emptiness check had been silently relying on. Re-verified clean
+  against the confirmed-isolated distro, including a combined hostile-argument test
+  (`cat` on a path with both a `/mnt/c` traversal attempt and shell metacharacters) -
+  both defenses held at once. See CLAUDE.md's A9 entry for the details.
 
 **A10: `ask_user` built and verified live.** Genuinely spoken through the real TTS
 engine, not printed-and-called-done - the answer side is honestly keyboard-only for

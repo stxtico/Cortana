@@ -4,15 +4,14 @@ never give an autonomous loop unrestricted shell on the host - this isn't that.
 
 Isolation is filesystem-enforced, not application-level filtering: the
 configured distro ([tools.shell].distro) has automount disabled in its
-/etc/wsl.conf, so nothing is ever mounted at /mnt/c inside it (the directory
-itself still exists as a WSL-created stub, always empty - see is_available()'s
-docstring for why that distinction matters) - there's nothing for a command to
-reach even if it tried, the same guarantee a container's filesystem namespace
-would give, not a blocklist that only has to have one gap. is_available()
-verifies this live, every call, not just once at setup: the distro must
-exist AND /mnt/c must be provably empty right now, checked fresh each time
-rather than trusted from a config flag. See CLAUDE.md's A9 entry for the
-exact `wsl --import` + wsl.conf setup steps (run by the user, not
+/etc/wsl.conf, so nothing is ever mounted at /mnt/c inside it - there's
+nothing for a command to reach even if it tried, the same guarantee a
+container's filesystem namespace would give, not a blocklist that only has to
+have one gap. is_available() verifies this live, every call, not just once at
+setup, by checking the real mount table for a drvfs entry (see its own
+docstring - two prior versions inferred this from /mnt's directory contents
+instead and both were wrong in persistent ways). See CLAUDE.md's A9 entry for
+the exact `wsl --import` + wsl.conf setup steps (run by the user, not
 provisioned here).
 
 Commands run via `wsl.exe -d <distro> -e <command> <args...>` - the `-e` flag
@@ -96,28 +95,33 @@ async def _run_wsl(distro: str, argv: list[str], cwd: str | None = None, timeout
 
 async def is_available() -> bool:
     """Live, every call - not a one-time-at-startup latch (same reasoning as
-    tools/_search_searxng.py's check): the distro must exist, and /mnt/c must
-    be provably absent inside it right now, not assumed from the fact setup
-    was done at some point in the past.
+    tools/_search_searxng.py's check): the distro must exist, and no Windows
+    drive can be mounted inside it right now, not assumed from the fact
+    setup was done at some point in the past.
 
-    Checks `ls -A /mnt/c` is empty, NOT whether `/mnt/c` exists as a directory
-    entry - the first version of this check tested the latter and was wrong
-    in a way that made it permanently unusable: WSL creates /mnt/c, /mnt/wsl,
-    /mnt/wslg as empty stub directories unconditionally, regardless of the
-    automount setting, so `ls /mnt` always lists them whether or not automount
-    ever actually mounted anything there. Confirmed live (CLAUDE.md's A9
-    entry): with automount correctly disabled, `ls /mnt/c` returns nothing and
-    `mount` shows no drvfs entry at all - a real Windows C: mount is never
-    empty in practice, so "empty" is a reliable, simple signal that nothing is
-    actually mounted, without needing to parse `mount`'s output format."""
+    Checks the real mount table (`mount`) for a `drvfs` entry - not directory
+    contents under /mnt. Two prior versions of this check both inferred
+    mount state from `/mnt`'s directory listing and both were wrong in ways
+    that could persist indefinitely: checking whether `/mnt` itself was empty
+    fails forever, because WSL always has `/mnt/wsl` and `/mnt/wslg` there -
+    its own tmpfs internals, unrelated to Windows drives, present regardless
+    of the automount setting. A follow-up version narrowed to checking
+    `/mnt/c` specifically for emptiness, which was closer, but still an
+    inference - it assumes an empty `/mnt/c` means unmounted rather than
+    checking that directly, and breaks if `/mnt/c` gets removed entirely
+    (confirmed live: it was, as an empty leftover from the distro's first
+    boot). `mount`'s own output is the actual kernel-level ground truth, not
+    an inference from what a directory happens to contain - `drvfs` is the
+    filesystem type WSL uses for every Windows-drive mount, so its total
+    absence from `mount` is a direct answer, not a proxy for one."""
     config = _load_config()
     distro = config.get("distro", "")
     if not distro:
         return False
-    code, stdout, _ = await _run_wsl(distro, ["ls", "-A", "/mnt/c"], timeout_s=5.0)
+    code, stdout, _ = await _run_wsl(distro, ["mount"], timeout_s=5.0)
     if code != 0:
-        return True  # /mnt/c doesn't even exist as a path - can't be mounted
-    return stdout.strip() == ""  # exists but empty = nothing actually mounted there
+        return False  # distro doesn't exist, or wsl.exe itself failed
+    return "drvfs" not in stdout.lower()
 
 
 def describe(command: str, args: list[str] | None = None) -> str:
