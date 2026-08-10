@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Cortana - Control Panel</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="topbar">
+    <span id="title">Cortana - Control Panel</span>
+    <span id="model-badge" class="badge badge-unknown">model: checking...</span>
+  </header>
+
+  <nav id="tabs">
+    <button class="tab-btn active" data-tab="conversation">Conversation</button>
+    <button class="tab-btn" data-tab="tools">Tools</button>
+    <button class="tab-btn" data-tab="latency">Latency</button>
+    <button class="tab-btn" data-tab="memory">Memory</button>
+  </nav>
+
+  <main>
+    <section id="tab-conversation" class="tab-panel active">
+      <div id="conversation-list" class="scroll-list"></div>
+    </section>
+
+    <section id="tab-tools" class="tab-panel">
+      <p class="hint">
+        Live only when <code>services/brain/agent.py</code>'s tool-use loop actually runs -
+        currently a standalone CLI harness, not yet wired into the conversational loop
+        (<code>services/brain/loop.py</code>). Empty here during a normal voice conversation
+        is expected, not broken.
+      </p>
+      <div id="tools-list" class="scroll-list"></div>
+    </section>
+
+    <section id="tab-latency" class="tab-panel">
+      <div id="latency-cards" class="card-grid"></div>
+      <div id="latency-list" class="scroll-list"></div>
+    </section>
+
+    <section id="tab-memory" class="tab-panel">
+      <div id="memory-body">
+        <div id="memory-sessions" class="scroll-list"></div>
+        <div id="memory-entries" class="scroll-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

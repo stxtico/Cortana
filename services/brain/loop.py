@@ -32,6 +32,11 @@ before they could produce anything - see [brain.barge_in].min_playback_s in
 cortana.toml: only cancel if tts.response_playback_elapsed_s() shows real,
 ongoing audio that's been playing at least that long. Every decision (cancelled
 or skipped, and why) is logged to logs/loop.jsonl so this can't go quiet again.
+
+Also logs the actual dialogue - "user_turn"/"assistant_turn" records with the
+real text (PROMPTS.md A12) - previously only ever print()ed to stdout, never
+persisted anywhere. A12's UI conversation-history panel tails this same file;
+without these two records there was nothing for it to read.
 """
 
 import asyncio
@@ -94,7 +99,9 @@ async def _respond(user_text: str, persona: str, memory: MemoryManager) -> None:
         await voice_tts.speak_stream(_tokens())
     finally:
         if assistant_chunks:
-            memory.append_assistant("".join(assistant_chunks))
+            text = "".join(assistant_chunks)
+            memory.append_assistant(text)
+            _log({"stage": "assistant_turn", "text": text})
         memory.spawn_after_turn()
 
 
@@ -151,6 +158,7 @@ async def run(memory: MemoryManager) -> None:
                 print(f"(previous response errored: {exc!r})")
 
         print(f"> {user_text}")
+        _log({"stage": "user_turn", "text": user_text})
         response_task = asyncio.ensure_future(_respond(user_text, persona, memory))
         response_task.add_done_callback(_on_response_task_done)
 

@@ -3,16 +3,24 @@ not after. Lists what's stored, shows which session it came from, deletes a
 wrong entry, and safely edits config/profile.md. This is the tool for catching
 memory drift before weeks of accumulation make it hard to untangle (CLAUDE.md).
 
-    uv run scripts/memory.py list [--session ID] [--limit N] [--role user|assistant]
-    uv run scripts/memory.py sessions
+    uv run scripts/memory.py list [--session ID] [--limit N] [--role user|assistant] [--json]
+    uv run scripts/memory.py sessions [--json]
     uv run scripts/memory.py show ID
     uv run scripts/memory.py delete ID
     uv run scripts/memory.py profile
     uv run scripts/memory.py edit-profile
+
+--json on list/sessions is for ui/'s memory inspector tab (PROMPTS.md A12) -
+the Electron app shells out to this same CLI rather than talking to the
+sqlite store directly, so there's exactly one implementation of "what's in
+memory" instead of a second one reimplemented in JS. The default text output
+is unchanged and still what a human runs by hand.
 """
 
 import argparse
+import dataclasses
 import difflib
+import json
 import os
 import shutil
 import subprocess
@@ -53,6 +61,9 @@ def cmd_list(args: argparse.Namespace) -> None:
     passages = store.list_all(conn, session_id=args.session, limit=args.limit)
     if args.role:
         passages = [p for p in passages if p.role == args.role]
+    if args.json:
+        print(json.dumps([dataclasses.asdict(p) for p in passages]))
+        return
     if not passages:
         print("(nothing stored)")
         return
@@ -65,6 +76,11 @@ def cmd_list(args: argparse.Namespace) -> None:
 def cmd_sessions(args: argparse.Namespace) -> None:
     conn = _connect()
     sessions = store.list_sessions(conn)
+    if args.json:
+        print(json.dumps([
+            {"session_id": sid, "started": started, "count": count} for sid, started, count in sessions
+        ]))
+        return
     if not sessions:
         print("(no sessions yet)")
         return
@@ -141,9 +157,11 @@ def main() -> None:
     p_list.add_argument("--session", default=None, help="filter to one session id")
     p_list.add_argument("--limit", type=int, default=50)
     p_list.add_argument("--role", choices=["user", "assistant"], default=None)
+    p_list.add_argument("--json", action="store_true", help="print as a JSON array instead of a table")
     p_list.set_defaults(func=cmd_list)
 
     p_sessions = sub.add_parser("sessions", help="list sessions with counts")
+    p_sessions.add_argument("--json", action="store_true", help="print as a JSON array instead of a table")
     p_sessions.set_defaults(func=cmd_sessions)
 
     p_show = sub.add_parser("show", help="show one entry in full")

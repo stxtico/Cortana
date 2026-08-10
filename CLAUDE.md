@@ -5,7 +5,7 @@ and rationale — this file is the operating summary.
 
 ## Current state
 
-**Phase:** 3 — Tools
+**Phase:** 5 — Control panel (done: A11 daemon, A12 UI; next up is 7 — CAD, A13)
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -1143,8 +1143,74 @@ A8's tool-calling demands first, see Done below)
   step's list of things to close out, alongside A9's confirmation gate and
   A10's ask_user answer path.
 
-**Next**: A12 - the control panel UI, per PROMPTS.md's sequencing now that
-A11 is done. A5b
+- **A12 — Control panel UI (`ui/`), Electron, real data, no new server.**
+  Scope taken from PROMPTS.md's narrower A12 list, not PLAN.md's fuller Phase
+  5 (which also asks for a reactive waveform) - the waveform wasn't built,
+  the four bullets PROMPTS.md actually asks for were: conversation history,
+  live tool-call indicator, per-stage latency readout, memory inspector tab,
+  plus a big model-active indicator.
+  **Data plumbing decided before writing UI code**: no WebSocket/HTTP server
+  added on the Python side - `ui/main.js` tails the same JSONL logs every
+  service already writes (`logs/{loop,agent,ears,brain,voice}.jsonl`), same
+  "plain file, not a socket" choice `services/voice/playback_state.py`
+  already made for cross-process coordination (A11). `ui/log_tail.js` is a
+  small hand-rolled tailer (offset tracking, partial-line buffering across
+  writes, truncation handling) with zero Electron dependency - built that way
+  specifically so it could be unit-tested with plain `node`, since an
+  Electron window can't be inspected any other way in this environment (see
+  verification below). The memory inspector tab shells out to
+  `scripts/memory.py` (a new `--json` flag added to its `list`/`sessions`
+  subcommands, default text output unchanged) rather than reading the
+  sqlite-vec store directly from Node - one real implementation of "what's in
+  memory," not a second one reimplemented in JS. The model-active badge polls
+  Ollama's own `/api/ps` directly every 5s - the real source of truth for
+  what's actually resident, not a static read of `[models].primary`.
+  **Found a real gap building this, not before**: neither the user's nor the
+  assistant's actual turn text was ever logged anywhere - `services/brain/
+  loop.py` only ever `print()`ed dialogue to stdout. Without that, the
+  conversation-history panel had nothing to read. Added two records
+  (`user_turn`, `assistant_turn`, both with the real text) to `loop.jsonl` -
+  the smallest change that unblocks the panel, not a general-purpose
+  conversation-logging redesign.
+  **Known limitation, stated in the UI itself, not just here**: the Tools tab
+  carries a visible caption that it's only live when `services/brain/
+  agent.py`'s tool-use loop actually runs - that loop still isn't wired into
+  `loop.py`'s conversational path (same standing deferral as A8/A9/A10), so
+  an empty Tools tab during a normal voice conversation is the correct
+  behavior, not a bug. Chose to surface this honestly in the panel itself
+  rather than let it look broken.
+  **Node/Electron compatibility, a real environment finding**: `npm install
+  electron` defaults to the latest (43.x), whose install script requires
+  Node >=22.12 - this machine has Node 20.11.1, and the install genuinely
+  fails (`ERR_REQUIRE_ESM` in `@electron/get`), not just a version warning.
+  Pinned to `electron@39.8.10` instead - `engines: {node: '>=12.20.55'}`,
+  installs clean, and is the newest 39.x patch, which matters because `npm
+  audit` flags every Electron `<=39.8.9` for a stack of known CVEs (ASAR
+  integrity bypass, IPC spoofing, etc.) - `39.8.10` is the fix. `npm audit`
+  reports zero vulnerabilities at that pin.
+  **Verified for real, not just "no exceptions in the log"** (rule 6 - render
+  and look at it, this project has no way to eyeball an Electron window any
+  other way): launched the real app, confirmed via `Get-Process` a genuine
+  window titled "Cortana - Control Panel" was live, then screenshotted it
+  directly (PowerShell `System.Drawing`, window handle from the live
+  process) while injecting real-shaped events into all five log files.
+  Screenshots confirm, pixel for pixel: the Conversation tab rendered the
+  injected user/assistant turns as chat bubbles with correct timestamps; the
+  Tools tab showed both its caption and a real `tool_call` event; the
+  Latency tab's cards populated correctly (Wake/STT/TTFT/tok-s/TTS synth) and
+  its scrolling list showed real *historical* voice-synth entries from past
+  sessions, proving `readLastLines()` genuinely loads prior log history on
+  startup, not just fresh appends; the model badge read "model: gemma4:e4b"
+  in the active-green state from a real live `/api/ps` poll; the Memory tab
+  showed the real, honest "No memory store yet" message sourced from
+  `scripts/memory.py`'s actual current output (the store was cleared after
+  A7). `ui/log_tail.js` additionally unit-tested headlessly with plain
+  `node` (history capping, live-append pickup, partial-line buffering across
+  two writes, malformed-line tolerance, truncation recovery) before ever
+  touching Electron.
+
+**Next**: A13 - the CAD data pipeline, per PROMPTS.md's sequencing now that
+A12 is done. A5b
 (latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline

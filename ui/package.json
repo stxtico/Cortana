@@ -1,0 +1,13 @@
+{
+  "name": "cortana-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cortana control panel (PROMPTS.md A12) - utility window: conversation history, live tool-call feed, per-stage latency, memory inspector, active-model indicator. Not the animated character (that's Phase 8/A15) - function over polish, this is where the rest of the system gets debugged from.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^39.8.10"
+  }
+}

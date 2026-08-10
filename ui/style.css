@@ -1,0 +1,108 @@
+/* Function over polish (PROMPTS.md A12) - a debug utility window, not the character. */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  font-size: 13px;
+  background: #1b1d21;
+  color: #d8dade;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+#topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #101114;
+  border-bottom: 1px solid #2a2d33;
+}
+
+#title { font-weight: 600; }
+
+.badge {
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.badge-active { background: #1f4d2f; color: #7ee2a0; }
+.badge-idle { background: #4d3f1f; color: #e2c67e; }
+.badge-unknown { background: #3a2020; color: #e28080; }
+
+#tabs {
+  display: flex;
+  background: #16171a;
+  border-bottom: 1px solid #2a2d33;
+}
+.tab-btn {
+  background: none;
+  border: none;
+  color: #9a9ea6;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+  border-bottom: 2px solid transparent;
+}
+.tab-btn:hover { color: #d8dade; }
+.tab-btn.active { color: #fff; border-bottom-color: #4c8bf5; }
+
+main { flex: 1; overflow: hidden; display: flex; }
+.tab-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; padding: 10px; }
+.tab-panel.active { display: flex; }
+
+.hint {
+  margin: 0 0 8px 0;
+  padding: 6px 10px;
+  background: #26282e;
+  border-radius: 4px;
+  color: #9a9ea6;
+  font-size: 12px;
+}
+.hint code { color: #c4c8ce; }
+
+.scroll-list { flex: 1; overflow-y: auto; }
+
+.turn { padding: 6px 10px; margin-bottom: 6px; border-radius: 6px; max-width: 80%; }
+.turn.user { background: #26282e; margin-left: auto; }
+.turn.assistant { background: #1f2b3a; margin-right: auto; }
+.turn-meta { font-size: 10px; color: #767a82; margin-bottom: 2px; }
+
+.event-row {
+  padding: 5px 8px;
+  border-bottom: 1px solid #232529;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 12px;
+}
+.event-row .ok { color: #7ee2a0; }
+.event-row .fail { color: #e28080; }
+.event-row .ts { color: #767a82; margin-right: 6px; }
+.event-row .src { color: #4c8bf5; margin-right: 6px; }
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.card {
+  background: #26282e;
+  border-radius: 6px;
+  padding: 8px 10px;
+}
+.card .label { font-size: 11px; color: #9a9ea6; }
+.card .value { font-size: 18px; font-weight: 600; margin-top: 2px; }
+
+.session-row, .entry-row {
+  padding: 6px 8px;
+  border-bottom: 1px solid #232529;
+  cursor: pointer;
+  font-size: 12px;
+}
+.session-row:hover { background: #232529; }
+.session-row.selected { background: #1f2b3a; }
+.entry-row .role { color: #4c8bf5; margin-right: 6px; }
