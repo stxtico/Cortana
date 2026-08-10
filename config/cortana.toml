@@ -38,6 +38,12 @@ heavy          = true    # B3 heavy-tier reasoning mode
 # each turn makes 2-3 calls) but agent.py isn't wired into the low-latency
 # voice loop yet - worth revisiting if/when it is.
 agent          = true
+# services/daemon/relevance.py's yes/no interruption check - a single-word
+# classification, not a multi-step tool chain, so agent=true's reliability
+# case doesn't obviously transfer. Defaults off for response speed on a
+# 30s-interval poll loop; revisit if a live run shows relevance calls
+# misfiring the way think=false agent calls did.
+daemon         = false
 
 [audio]
 sample_rate = 16000
@@ -399,6 +405,12 @@ poll_interval_s = 30
 rate_limit_per_hour = 2
 quiet_hours_start = "22:00"
 quiet_hours_end   = "08:00"
+# services/daemon/daemon.py waits for services/voice/playback_state.is_active()
+# to go false before announcing, rather than talking over a response in
+# progress - but that wait is bounded, not unconditional, so a stuck "active"
+# flag (e.g. a crash between mark_started()/mark_stopped()) delays one
+# announcement instead of silencing the daemon forever.
+max_playback_wait_s = 60
 
 [daemon.timers]
 # tools/set_timer.py (agent-callable) writes here; services/daemon/timers.py
