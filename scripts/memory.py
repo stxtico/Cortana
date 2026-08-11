@@ -1,23 +1,26 @@
 """Memory inspector (PROMPTS.md A7) - built alongside the memory layer itself,
-not after. Lists what's stored, shows which session it came from, deletes a
-wrong entry, and safely edits config/profile.md. This is the tool for catching
-memory drift before weeks of accumulation make it hard to untangle (CLAUDE.md).
+not after. Lists what's stored, shows which session it came from, edits or
+deletes a wrong entry, and safely edits config/profile.md. This is the tool
+for catching memory drift before weeks of accumulation make it hard to
+untangle (CLAUDE.md).
 
     uv run scripts/memory.py list [--session ID] [--limit N] [--role user|assistant] [--json]
     uv run scripts/memory.py sessions [--json]
     uv run scripts/memory.py show ID
-    uv run scripts/memory.py delete ID
+    uv run scripts/memory.py edit ID --text "corrected text" [--no-reembed] [--json]
+    uv run scripts/memory.py delete ID [--yes] [--json]
     uv run scripts/memory.py profile
     uv run scripts/memory.py edit-profile
 
---json on list/sessions is for ui/'s memory inspector tab (PROMPTS.md A12) -
-the Electron app shells out to this same CLI rather than talking to the
-sqlite store directly, so there's exactly one implementation of "what's in
-memory" instead of a second one reimplemented in JS. The default text output
-is unchanged and still what a human runs by hand.
+--json on list/sessions/edit/delete is for ui/'s memory inspector tab
+(PROMPTS.md A12) - the Electron app shells out to this same CLI rather than
+talking to the sqlite store directly, so there's exactly one implementation
+of "what's in memory" instead of a second one reimplemented in JS. The
+default text output is unchanged and still what a human runs by hand.
 """
 
 import argparse
+import asyncio
 import dataclasses
 import difflib
 import json
@@ -31,6 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from services.memory import embeddings  # noqa: E402
 from services.memory import store  # noqa: E402
 from services.memory.profile import PROFILE_PATH, load_profile  # noqa: E402
 
@@ -108,16 +112,65 @@ def cmd_delete(args: argparse.Namespace) -> None:
     passages = store.list_all(conn, limit=100000)
     match = next((p for p in passages if p.id == args.id), None)
     if match is None:
+        if args.json:
+            print(json.dumps({"ok": False, "error": f"No entry with id {args.id}"}))
+            return
         raise SystemExit(f"No entry with id {args.id}")
-    print(f"About to delete entry {match.id} (session {match.session_id}, {match.role}):")
-    print(f"  {_truncate(match.text, 120)}")
     if not args.yes:
+        # Never call input() here in --json mode - a spawned child process
+        # (ui/'s memory tab) has no real stdin to answer it, and this project
+        # already hit exactly that failure mode once (A10's ask_user/shell
+        # EOFError, CLAUDE.md). The UI is expected to confirm in its own
+        # dialog and always pass --yes; --json without --yes is refused
+        # outright rather than risking a hang.
+        if args.json:
+            print(json.dumps({"ok": False, "error": "refusing to delete without --yes"}))
+            return
+        print(f"About to delete entry {match.id} (session {match.session_id}, {match.role}):")
+        print(f"  {_truncate(match.text, 120)}")
         confirm = input("Delete this entry? [y/N] ").strip().lower()
         if confirm != "y":
             print("Cancelled.")
             return
     ok = store.delete_passage(conn, args.id)
+    if args.json:
+        print(json.dumps({"ok": ok}))
+        return
     print("Deleted." if ok else "Nothing deleted (already gone?).")
+
+
+def cmd_edit(args: argparse.Namespace) -> None:
+    conn = _connect()
+    passages = store.list_all(conn, limit=100000)
+    match = next((p for p in passages if p.id == args.id), None)
+    if match is None:
+        if args.json:
+            print(json.dumps({"ok": False, "error": f"No entry with id {args.id}"}))
+            return
+        raise SystemExit(f"No entry with id {args.id}")
+
+    async def _embed_and_close(text: str) -> list[float]:
+        # Embed and close in the same asyncio.run() lifecycle - embeddings.py's
+        # httpx.AsyncClient is loop-bound (rule 7), so closing it from a
+        # different asyncio.run() call than the one that created it would be
+        # closing it from the wrong loop.
+        vector = await embeddings.embed(text)
+        await embeddings.aclose()
+        return vector
+
+    embedding = None if args.no_reembed else asyncio.run(_embed_and_close(args.text))
+    ok = store.update_passage(conn, args.id, args.text, embedding)
+    if args.json:
+        print(json.dumps({"ok": ok, "reembedded": embedding is not None}))
+        return
+    if not ok:
+        print("Nothing updated (already gone?).")
+        return
+    print(f"Updated entry {args.id}.")
+    if embedding is not None:
+        print("Re-embedded for retrieval.")
+    else:
+        print("Not re-embedded (--no-reembed) - retrieval will still match the old text.")
 
 
 def cmd_profile(args: argparse.Namespace) -> None:
@@ -171,7 +224,18 @@ def main() -> None:
     p_delete = sub.add_parser("delete", help="delete one entry")
     p_delete.add_argument("id", type=int)
     p_delete.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
+    p_delete.add_argument("--json", action="store_true", help="print {ok: bool} instead of a message")
     p_delete.set_defaults(func=cmd_delete)
+
+    p_edit_entry = sub.add_parser("edit", help="correct a stored entry's text (re-embeds by default)")
+    p_edit_entry.add_argument("id", type=int)
+    p_edit_entry.add_argument("--text", required=True, help="replacement text")
+    p_edit_entry.add_argument(
+        "--no-reembed", action="store_true",
+        help="skip re-embedding (faster, but retrieval will still match the old text)",
+    )
+    p_edit_entry.add_argument("--json", action="store_true", help="print {ok: bool} instead of a message")
+    p_edit_entry.set_defaults(func=cmd_edit)
 
     p_profile = sub.add_parser("profile", help="print config/profile.md")
     p_profile.set_defaults(func=cmd_profile)

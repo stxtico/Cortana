@@ -14,3 +14,4 @@ voice_refs/**/*.mp4
 
 memory_store/
 daemon_store/
+ui/dist/

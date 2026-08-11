@@ -3,11 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "description": "Cortana control panel (PROMPTS.md A12) - utility window: conversation history, live tool-call feed, per-stage latency, memory inspector, active-model indicator. Not the animated character (that's Phase 8/A15) - function over polish, this is where the rest of the system gets debugged from.",
-  "main": "main.js",
+  "main": "dist/main.js",
   "scripts": {
-    "start": "electron ."
+    "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json",
+    "start": "npm run build && electron ."
   },
   "devDependencies": {
-    "electron": "^39.8.10"
+    "@types/node": "^26.2.0",
+    "electron": "^39.8.10",
+    "typescript": "^7.0.2"
   }
 }

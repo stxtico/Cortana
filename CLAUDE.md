@@ -1143,71 +1143,124 @@ A8's tool-calling demands first, see Done below)
   step's list of things to close out, alongside A9's confirmation gate and
   A10's ask_user answer path.
 
-- **A12 — Control panel UI (`ui/`), Electron, real data, no new server.**
-  Scope taken from PROMPTS.md's narrower A12 list, not PLAN.md's fuller Phase
-  5 (which also asks for a reactive waveform) - the waveform wasn't built,
-  the four bullets PROMPTS.md actually asks for were: conversation history,
-  live tool-call indicator, per-stage latency readout, memory inspector tab,
-  plus a big model-active indicator.
-  **Data plumbing decided before writing UI code**: no WebSocket/HTTP server
-  added on the Python side - `ui/main.js` tails the same JSONL logs every
-  service already writes (`logs/{loop,agent,ears,brain,voice}.jsonl`), same
-  "plain file, not a socket" choice `services/voice/playback_state.py`
-  already made for cross-process coordination (A11). `ui/log_tail.js` is a
-  small hand-rolled tailer (offset tracking, partial-line buffering across
-  writes, truncation handling) with zero Electron dependency - built that way
-  specifically so it could be unit-tested with plain `node`, since an
-  Electron window can't be inspected any other way in this environment (see
-  verification below). The memory inspector tab shells out to
-  `scripts/memory.py` (a new `--json` flag added to its `list`/`sessions`
-  subcommands, default text output unchanged) rather than reading the
-  sqlite-vec store directly from Node - one real implementation of "what's in
-  memory," not a second one reimplemented in JS. The model-active badge polls
-  Ollama's own `/api/ps` directly every 5s - the real source of truth for
-  what's actually resident, not a static read of `[models].primary`.
-  **Found a real gap building this, not before**: neither the user's nor the
-  assistant's actual turn text was ever logged anywhere - `services/brain/
-  loop.py` only ever `print()`ed dialogue to stdout. Without that, the
-  conversation-history panel had nothing to read. Added two records
-  (`user_turn`, `assistant_turn`, both with the real text) to `loop.jsonl` -
-  the smallest change that unblocks the panel, not a general-purpose
-  conversation-logging redesign.
-  **Known limitation, stated in the UI itself, not just here**: the Tools tab
-  carries a visible caption that it's only live when `services/brain/
-  agent.py`'s tool-use loop actually runs - that loop still isn't wired into
-  `loop.py`'s conversational path (same standing deferral as A8/A9/A10), so
-  an empty Tools tab during a normal voice conversation is the correct
-  behavior, not a bug. Chose to surface this honestly in the panel itself
-  rather than let it look broken.
-  **Node/Electron compatibility, a real environment finding**: `npm install
-  electron` defaults to the latest (43.x), whose install script requires
-  Node >=22.12 - this machine has Node 20.11.1, and the install genuinely
-  fails (`ERR_REQUIRE_ESM` in `@electron/get`), not just a version warning.
-  Pinned to `electron@39.8.10` instead - `engines: {node: '>=12.20.55'}`,
-  installs clean, and is the newest 39.x patch, which matters because `npm
-  audit` flags every Electron `<=39.8.9` for a stack of known CVEs (ASAR
-  integrity bypass, IPC spoofing, etc.) - `39.8.10` is the fix. `npm audit`
-  reports zero vulnerabilities at that pin.
-  **Verified for real, not just "no exceptions in the log"** (rule 6 - render
-  and look at it, this project has no way to eyeball an Electron window any
-  other way): launched the real app, confirmed via `Get-Process` a genuine
-  window titled "Cortana - Control Panel" was live, then screenshotted it
-  directly (PowerShell `System.Drawing`, window handle from the live
-  process) while injecting real-shaped events into all five log files.
-  Screenshots confirm, pixel for pixel: the Conversation tab rendered the
-  injected user/assistant turns as chat bubbles with correct timestamps; the
-  Tools tab showed both its caption and a real `tool_call` event; the
-  Latency tab's cards populated correctly (Wake/STT/TTFT/tok-s/TTS synth) and
-  its scrolling list showed real *historical* voice-synth entries from past
-  sessions, proving `readLastLines()` genuinely loads prior log history on
-  startup, not just fresh appends; the model badge read "model: gemma4:e4b"
-  in the active-green state from a real live `/api/ps` poll; the Memory tab
-  showed the real, honest "No memory store yet" message sourced from
-  `scripts/memory.py`'s actual current output (the store was cleared after
-  A7). `ui/log_tail.js` additionally unit-tested headlessly with plain
-  `node` (history capping, live-append pickup, partial-line buffering across
-  two writes, malformed-line tolerance, truncation recovery) before ever
-  touching Electron.
+- **A12 — Control panel UI (`ui/`), rebuilt in TypeScript with the real
+  visual direction (blue holographic, frameless, custom chrome).** First
+  pass (plain JS, default Electron chrome) landed, then was superseded in
+  the same session by an explicit follow-up spec: TypeScript (the codebase's
+  Python/TypeScript split extends to this too, not just prose), a frameless
+  window with a hand-built title bar/drag region/window controls,
+  semi-transparent glass panels over `backdrop-filter: blur()`, and reused
+  latency math instead of raw-log summing. The plain-JS version's files were
+  replaced outright, not layered on.
+  **Transport, stated before writing UI code (explicit requirement)**: still
+  no WebSocket/HTTP server on the Python side - `ui/src/log_tail.ts` upgrades
+  from A12v1's interval-only polling to `fs.watch()` on each log's containing
+  directory (a real OS-level push notification the instant Python's
+  `open(...).write()` appends a line) plus a slow backstop poll for whatever
+  `fs.watch` misses (a known gap, particularly on Windows). That's the "push
+  channel" the live tool-call indicator needs without inventing a second
+  transport alongside the file-based one `services/voice/playback_state.py`
+  already established (A11). Verified the push is real, not just the
+  backstop coincidentally firing fast: a headless `node` test wrote a line
+  and measured notification in 191ms against a 5000ms backstop interval.
+  **Reused, not reimplemented, per explicit instruction**: `scripts/
+  latency_report.py` refactored into `compute_report()` (the corrected
+  critical-path list, `_split_ttfc`'s ttfc_ms double-counting fix, the
+  target/status logic - all exactly as before) called by both the existing
+  printed CLI table and a new `--json` flag - one implementation, two
+  outputs, not a parallel TS port of the math. `ui/src/py_bridge.ts` is the
+  one shared shell-out helper both the latency panel and memory tab use.
+  **Memory inspector: edit and delete now genuinely work, not just view**
+  (explicit requirement - A7 built this inspector specifically for drift
+  correction). `services/memory/store.py` gained `update_passage()` -
+  re-embeds via `services/memory/embeddings.py` when given a vector, so
+  retrieval matches the corrected text rather than a stale vector for text
+  that's since been fixed. `scripts/memory.py` gained `edit ID --text
+  "..." [--no-reembed] [--json]`, and `delete` gained `--json`. Real
+  dispatcher-safety decision, not incidental: `--json` mode refuses to
+  delete without `--yes` rather than ever calling `input()` - a spawned
+  child process (this UI) has no real stdin to answer an interactive prompt,
+  the same `EOFError` class of bug A10 already hit once with
+  `tools/shell.py` + `ask_user` (CLAUDE.md). Verified end-to-end against a
+  real store, not mocked: inserted two real passages, edited one through the
+  actual UI (screenshot-confirmed text change), deleted the other through
+  the actual UI, then independently re-queried via the CLI (not the UI's own
+  view of its own write) and confirmed exactly one passage remained with the
+  edited text - the delete and the re-embed both genuinely persisted.
+  **Frameless/transparent chrome**: `frame: false` + `transparent: true`,
+  custom title bar built in `index.html`/`style.css`
+  (`-webkit-app-region: drag` on the bar, `no-drag` on the window-control
+  buttons and badge), IPC-driven minimize/maximize/close since a frameless
+  window gets zero OS-provided controls. `[ui]` added to `cortana.toml`
+  (`panel_opacity`, `blur_px`, `accent`) - opacity is a tunable per explicit
+  instruction ("so I can tune it rather than guessing once"), read once at
+  startup via the same "shell out to real Python TOML parsing, don't hand-roll
+  a second one in JS" pattern the rest of `ui/` already uses.
+  **Two real bugs found only by driving the actual rendered app, not by
+  "no exceptions in the terminal"** (rule 6, and this project's established
+  "an Electron window can't be inspected except by rendering it" problem -
+  solved differently this time, see verification below):
+  1. `tsc` compiled `renderer.ts` to CommonJS (`Object.defineProperty(exports,
+     ...)`) because the base `tsconfig.json`'s `module: Node16` applied to
+     every file in `src/`, but `renderer.js` loads via a plain `<script>` tag
+     in the browser, which has no `exports` global - the very first line
+     threw `ReferenceError: exports is not defined` and silently killed the
+     *entire* script. Every symptom (empty conversation panel, unmoved model
+     badge, unresponsive buttons) traced to this one throw, not five separate
+     bugs. Fixed by splitting into `tsconfig.main.json` (Node16, for
+     main/preload - real `require()` semantics) and `tsconfig.renderer.json`
+     (`module: ES2022`, which for a file with zero imports/exports emits a
+     plain script with no wrapper at all) - `package.json`'s `build` script
+     now runs both.
+  2. Real race, independent of bug 1: `startLogTailing()` pushed the entire
+     history replay over IPC synchronously right after `win.loadFile()` -
+     Electron's `ipcRenderer.on()` doesn't queue events sent before a
+     listener registers, so hundreds of `log-event` sends were dropped on
+     the floor before `renderer.ts`'s script had even loaded. The
+     model-status badge happened to work anyway, coincidentally, because its
+     first update only arrives after a real network round-trip to Ollama -
+     by then the renderer had caught up. Fixed by deferring all IPC-pushing
+     work (`startLogTailing`/`startTimerWatch`/`startModelPolling`, plus a
+     new unconditional initial `sendLatencyUpdate()` so the latency panel
+     doesn't sit empty until the next live event) until `did-finish-load`,
+     which only fires once the page's own `<script>` tags have finished
+     executing.
+  **Verification method, real and specific to this environment's
+  constraints**: OS-level screenshotting (PowerShell `System.Drawing` +
+  `GetWindowRect`) gave contradictory, DPI-scale-dependent results across
+  repeated calls on this machine (Electron renders per-monitor-DPI-aware;
+  the calling PowerShell process isn't, and `SetProcessDPIAware()` didn't
+  reliably fix it across separate tool invocations) - chased that dead end
+  once, then switched to `webContents.capturePage()` from *inside* the
+  Electron process itself, which sidesteps DPI entirely since it captures
+  Chromium's own compositor output. Interactions (tab switches, memory
+  edit/save, delete) were driven the same way, via `executeJavaScript()`
+  clicking real DOM elements and typing into the real textarea, rather than
+  simulated OS-level mouse events - genuinely exercises the same code path a
+  real click would, not a proxy for it. `window.confirm()` was monkeypatched
+  to `() => true` before the delete click specifically because a real native
+  confirm dialog blocks renderer JS with nothing `executeJavaScript()` can
+  click to dismiss it. All eight checkpoints (conversation, tools/activity
+  with real tool-call + daemon events + a pending-timer chip, latency cards
+  with real injected values, memory sessions/entries/edit-open/after-edit/
+  after-delete) confirmed visually correct, and the memory edit/delete
+  result was additionally confirmed against a fresh, independent
+  `scripts/memory.py list --json` call - not just the UI's own view of its
+  own write. All temporary diagnostic/capture code removed before commit;
+  none of it shipped.
+  Tools/Activity tab also folds in `daemon.jsonl` (announced/suppressed
+  decisions, distinct purple-tinted rows) and a pending-timers strip read
+  from `daemon_store/timers.json` - not in PROMPTS.md's literal A12 bullet
+  list, but explicitly named as a source to surface in this session's
+  instruction. Latency panel shows both the corrected derived total (with
+  its own missing-data state, honestly labeled, when a stage has zero
+  records in the current `--since`-scoped window) and a live raw-event feed
+  of individual stage measurements underneath - the derived number is never
+  computed client-side, only ever passed through from `compute_report()`.
+  Known limitation carried over from v1, unchanged: the Tools tab is only
+  live when `services/brain/agent.py`'s tool-use loop actually runs -
+  standing A8/A9/A10 deferral, stated in the panel itself via a visible
+  caption, not hidden.
 
 **Next**: A13 - the CAD data pipeline, per PROMPTS.md's sequencing now that
 A12 is done. A5b

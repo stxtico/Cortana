@@ -430,3 +430,17 @@ lookahead_minutes = 20
 # same "not authorized until configured" spirit as write_file's whitelist.
 subject_contains = []
 from_contains    = []
+
+[ui]
+# ui/ - the Electron control panel (PROMPTS.md A12). Blue holographic
+# aesthetic, semi-transparent panels over backdrop-filter: blur() so
+# contrast holds over whatever's behind the window - opacity is a config
+# value here rather than a hardcoded CSS constant specifically so it can be
+# tuned by ear/eye instead of guessed once and left. ui/src/main.ts reads
+# this table once at startup (a single synchronous `uv run python` call,
+# same "read the real TOML, don't hand-roll a second parser in JS" pattern
+# tools/set_timer.py's config reads already establish) and passes it to the
+# renderer.
+panel_opacity = 0.82   # 0-1, background alpha behind the blur
+blur_px       = 20     # backdrop-filter blur radius in the holographic panels
+accent        = "#39e6ff"   # primary cyan accent - borders, active states, glow

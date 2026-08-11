@@ -7,6 +7,11 @@ shared turn ID across ears.jsonl/brain.jsonl/voice.jsonl to join them precisely,
 so "First audio out" is reported as the sum of per-stage medians (clearly labeled
 as derived, not a single measured end-to-end number) rather than overclaiming
 precision a proper join would need.
+
+--json (PROMPTS.md A12): ui/'s latency panel calls this same compute_report()
+through a JSON snapshot rather than reimplementing the ttfc_ms double-counting
+fix or the critical-path stage list in TypeScript - one real implementation of
+the corrected math, not two that can drift apart.
 """
 
 import argparse
@@ -94,6 +99,70 @@ def _stats(values: list[float]) -> dict:
     return {"n": n, "median": statistics.median(sorted_v), "p95": sorted_v[p95_idx], "max": sorted_v[-1]}
 
 
+def compute_report(since: datetime | None = None, until: datetime | None = None) -> dict:
+    """The one real implementation of the corrected latency math - both main()'s
+    printed table and --json (and ui/'s live panel, via --json) read from this,
+    so there's nowhere for the two to drift apart. Critically: raw ttfc_ms is
+    NOT part of critical_path (it double-counts against LLM TTFT, see
+    _split_ttfc's docstring) - engine_synth_ms is the corrected, non-overlapping
+    TTS cost, and that's what's summed into first_audio_out."""
+    ears = _read_jsonl(EARS_LOG, since, until)
+    brain = _read_jsonl(BRAIN_LOG, since, until)
+    voice = _read_jsonl(VOICE_LOG, since, until)
+
+    def _values(records, stage, field):
+        return [r[field] for r in records if r.get("stage") == stage and r.get(field) is not None]
+
+    wake_ms = _values(ears, "wake", "latency_ms")
+    vad_ms = _values(ears, "vad", "latency_ms")
+    stt_ms = _values(ears, "stt", "latency_ms")
+    verify_ms = _values(ears, "verify", "latency_ms")
+    backchannel_ms = _values(ears, "backchannel", "latency_ms")
+    ttft_ms = [r["ttft_ms"] for r in brain if r.get("ttft_ms") is not None]
+    load_duration_ms = [r["load_duration_ms"] for r in brain if r.get("load_duration_ms") is not None]
+    prompt_eval_ms = [r["prompt_eval_duration_ms"] for r in brain if r.get("prompt_eval_duration_ms") is not None]
+    ttfc_ms = _values(voice, "ttfc", "ttfc_ms")
+    wait_for_text_ms, engine_synth_ms = _split_ttfc(voice)
+
+    critical_path = [
+        ("Wake word detect", wake_ms, 50),
+        ("VAD endpoint", vad_ms, 610),
+        ("STT", stt_ms, 375),
+        ("LLM time-to-first-token", ttft_ms, 450),
+        ("TTS engine synthesis (first chunk)", engine_synth_ms, 500),
+    ]
+    stages = []
+    for name, vals, target in critical_path:
+        s = _stats(vals)
+        status = "--" if s["median"] is None else ("OK" if s["median"] <= target else "OVER")
+        stages.append({"name": name, "target_ms": target, "status": status, **s})
+
+    missing = [s["name"] for s in stages if s["median"] is None]
+    first_audio_out = None
+    if not missing:
+        total = sum(s["median"] for s in stages)
+        first_audio_out = {
+            "total_ms": total,
+            "target_ms": FIRST_AUDIO_OUT_TARGET_MS,
+            "status": "OK" if total <= FIRST_AUDIO_OUT_TARGET_MS else "OVER",
+        }
+
+    return {
+        "counts": {"ears": len(ears), "brain": len(brain), "voice": len(voice)},
+        "critical_path": stages,
+        "first_audio_out": first_audio_out,
+        "first_audio_out_missing": missing or None,
+        "ttft_breakdown": {
+            "load_duration": _stats(load_duration_ms),
+            "prompt_eval_duration": _stats(prompt_eval_ms),
+        },
+        "ttfc_raw": _stats(ttfc_ms),
+        "wait_for_text": _stats(wait_for_text_ms),
+        "verify": _stats(verify_ms),
+        "backchannel": _stats(backchannel_ms),
+    }
+
+
 def _print_row(name: str, s: dict, target: float | None) -> None:
     if s["n"] == 0:
         target_str = f"{target:.0f}ms" if target is not None else "--"
@@ -106,6 +175,9 @@ def _print_row(name: str, s: dict, target: float | None) -> None:
     else:
         status, target_str = "--", "--"
     print(f"{name:<38} {s['n']:>4} {median:>7.1f}ms {p95:>7.1f}ms {mx:>7.1f}ms {target_str:>9} {status:>8}")
+
+
+HEADER = f"{'Stage':<38} {'n':>4} {'median':>9} {'p95':>9} {'max':>9} {'target':>9} {'status':>8}"
 
 
 def main() -> None:
@@ -125,13 +197,16 @@ def main() -> None:
              "live tests too (direct engine.synthesize()/brain_client.stream() calls made "
              "while debugging), which --since alone can't exclude.",
     )
+    parser.add_argument("--json", action="store_true", help="print the report as JSON instead of tables")
     args = parser.parse_args()
     since = datetime.fromisoformat(args.since) if args.since else None
     until = datetime.fromisoformat(args.until) if args.until else None
 
-    ears = _read_jsonl(EARS_LOG, since, until)
-    brain = _read_jsonl(BRAIN_LOG, since, until)
-    voice = _read_jsonl(VOICE_LOG, since, until)
+    report = compute_report(since, until)
+
+    if args.json:
+        print(json.dumps(report))
+        return
 
     if args.since and args.until:
         scope = f" from {args.since} to {args.until}"
@@ -139,54 +214,23 @@ def main() -> None:
         scope = f" since {args.since}"
     else:
         scope = " (full history)"
-    print(f"Read {len(ears)} records from {EARS_LOG.relative_to(ROOT)}, "
-          f"{len(brain)} from {BRAIN_LOG.relative_to(ROOT)}, "
-          f"{len(voice)} from {VOICE_LOG.relative_to(ROOT)}{scope}\n")
+    counts = report["counts"]
+    print(f"Read {counts['ears']} records from {EARS_LOG.relative_to(ROOT)}, "
+          f"{counts['brain']} from {BRAIN_LOG.relative_to(ROOT)}, "
+          f"{counts['voice']} from {VOICE_LOG.relative_to(ROOT)}{scope}\n")
 
-    def _values(records, stage, field):
-        return [r[field] for r in records if r.get("stage") == stage and r.get(field) is not None]
+    print(HEADER)
+    print("-" * len(HEADER))
+    for s in report["critical_path"]:
+        _print_row(s["name"], s, s["target_ms"])
 
-    wake_ms = _values(ears, "wake", "latency_ms")
-    vad_ms = _values(ears, "vad", "latency_ms")
-    stt_ms = _values(ears, "stt", "latency_ms")
-    verify_ms = _values(ears, "verify", "latency_ms")
-    backchannel_ms = _values(ears, "backchannel", "latency_ms")
-    ttft_ms = [r["ttft_ms"] for r in brain if r.get("ttft_ms") is not None]
-    load_duration_ms = [r["load_duration_ms"] for r in brain if r.get("load_duration_ms") is not None]
-    prompt_eval_ms = [r["prompt_eval_duration_ms"] for r in brain if r.get("prompt_eval_duration_ms") is not None]
-    ttfc_ms = _values(voice, "ttfc", "ttfc_ms")
-    wait_for_text_ms, engine_synth_ms = _split_ttfc(voice)
-
-    # "TTS first chunk" (ttfc_ms) is NOT included here - it's measured from
-    # speak_stream()'s entry, the same moment the LLM call starts, so it already
-    # *contains* the LLM TTFT wait rather than following it. Summing both would
-    # double-count that wait (A5, CLAUDE.md's "Latency budget" section has the
-    # full derivation). engine_synth_ms (this same ttfc_ms, minus the LLM-wait
-    # portion via synthesize_call's since_stream_start_ms) is the correct,
-    # non-overlapping additive TTS cost.
-    critical_path = [
-        ("Wake word detect", wake_ms, 50),
-        ("VAD endpoint", vad_ms, 610),
-        ("STT", stt_ms, 375),
-        ("LLM time-to-first-token", ttft_ms, 450),
-        ("TTS engine synthesis (first chunk)", engine_synth_ms, 500),
-    ]
-
-    header = f"{'Stage':<38} {'n':>4} {'median':>9} {'p95':>9} {'max':>9} {'target':>9} {'status':>8}"
-    print(header)
-    print("-" * len(header))
-    for name, vals, target in critical_path:
-        _print_row(name, _stats(vals), target)
-
-    print("-" * len(header))
-    medians = [_stats(vals)["median"] for _, vals, _ in critical_path]
-    if all(m is not None for m in medians):
-        derived_total = sum(medians)
-        status = "OK" if derived_total <= FIRST_AUDIO_OUT_TARGET_MS else "OVER"
-        print(f"{'First audio out (derived: sum of medians)':<38} {'':>4} {derived_total:>7.1f}ms "
-              f"{'':>9} {'':>9} {FIRST_AUDIO_OUT_TARGET_MS:>7.0f}ms {status:>8}")
+    print("-" * len(HEADER))
+    if report["first_audio_out"] is not None:
+        fao = report["first_audio_out"]
+        print(f"{'First audio out (derived: sum of medians)':<38} {'':>4} {fao['total_ms']:>7.1f}ms "
+              f"{'':>9} {'':>9} {fao['target_ms']:>7.0f}ms {fao['status']:>8}")
     else:
-        missing = [name for (name, _, _), m in zip(critical_path, medians) if m is None]
+        missing = report["first_audio_out_missing"]
         print(f"{'First audio out (derived)':<38} insufficient data - no records yet for: {', '.join(missing)}")
 
     print()
@@ -196,10 +240,10 @@ def main() -> None:
     print("persistent per-call floor on this Ollama/model/GPU setup, not a cold-start signal")
     print("despite the field name. prompt_eval_duration_ms is the controllable, context-size-")
     print("dependent remainder. ttft_ms above should be close to the sum of the two rows below.")
-    print(header)
-    print("-" * len(header))
-    _print_row("  load_duration (Ollama-reported floor)", _stats(load_duration_ms), None)
-    _print_row("  prompt_eval_duration (context-dependent)", _stats(prompt_eval_ms), None)
+    print(HEADER)
+    print("-" * len(HEADER))
+    _print_row("  load_duration (Ollama-reported floor)", report["ttft_breakdown"]["load_duration"], None)
+    _print_row("  prompt_eval_duration (context-dependent)", report["ttft_breakdown"]["prompt_eval_duration"], None)
 
     print()
     print("Old 'TTS first chunk' number, for reference (A5): raw ttfc_ms is measured from")
@@ -208,17 +252,17 @@ def main() -> None:
     print("(it would double-count against LLM TTFT). 'waiting for LLM text' below is that")
     print("LLM-wait portion in isolation - it should track LLM TTFT plus a small increment")
     print("to finish generating sentence 1, not be summed separately into the total.")
-    print(header)
-    print("-" * len(header))
-    _print_row("  raw ttfc_ms (LLM-wait + engine synthesis, old number)", _stats(ttfc_ms), None)
-    _print_row("  waiting for LLM text (first-chunk trigger)", _stats(wait_for_text_ms), None)
+    print(HEADER)
+    print("-" * len(HEADER))
+    _print_row("  raw ttfc_ms (LLM-wait + engine synthesis, old number)", report["ttfc_raw"], None)
+    _print_row("  waiting for LLM text (first-chunk trigger)", report["wait_for_text"], None)
 
     print()
     print("New stages (not in the original CLAUDE.md budget table - added per PROMPTS.md A4):")
-    print(header)
-    print("-" * len(header))
-    _print_row("Verify (wake confirmation)", _stats(verify_ms), None)
-    _print_row("Backchannel (VAD-end -> sound starts)", _stats(backchannel_ms), None)
+    print(HEADER)
+    print("-" * len(HEADER))
+    _print_row("Verify (wake confirmation)", report["verify"], None)
+    _print_row("Backchannel (VAD-end -> sound starts)", report["backchannel"], None)
     print()
     print("Verify runs concurrently with recording (services/ears/pipeline.py), so it's")
     print("not additive to the happy-path critical path above on true positives - only a")

@@ -138,3 +138,26 @@ def delete_passage(conn: sqlite3.Connection, passage_id: int) -> bool:
         conn.execute("DELETE FROM passages_vec WHERE rowid = ?", (passage_id,))
         conn.commit()
         return cur.rowcount > 0
+
+
+def update_passage(conn: sqlite3.Connection, passage_id: int, text: str, embedding: list[float] | None) -> bool:
+    """Corrects a stored entry's text (PROMPTS.md A7/A12 - the inspector was
+    built for drift correction specifically, so this has to actually work, not
+    just view). Re-embeds when given a vector so retrieval matches what's
+    actually stored now, not a stale vector for text that's since been
+    corrected - callers that skip re-embedding (embedding=None) get a faster
+    edit at the cost of retrieval still matching the old text until the next
+    one that does re-embed."""
+    with _lock:
+        cur = conn.execute("UPDATE passages SET text = ? WHERE id = ?", (text, passage_id))
+        if cur.rowcount == 0:
+            conn.rollback()
+            return False
+        if embedding is not None:
+            conn.execute("DELETE FROM passages_vec WHERE rowid = ?", (passage_id,))
+            conn.execute(
+                "INSERT INTO passages_vec (rowid, embedding) VALUES (?, ?)",
+                (passage_id, sqlite_vec.serialize_float32(embedding)),
+            )
+        conn.commit()
+        return True
