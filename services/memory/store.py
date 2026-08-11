@@ -9,13 +9,20 @@ and asyncio.to_thread can hand consecutive calls to different worker threads -
 same reasoning as XTTSEngine._model_lock (services/voice/xtts_engine.py).
 """
 
+import json
 import sqlite3
 import threading
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 import sqlite_vec
+
+ROOT = Path(__file__).resolve().parent.parent.parent
+# Same file services/memory/embeddings.py already writes "embed" records to -
+# one log for the whole memory subsystem, distinguished by "stage", rather
+# than a new file per concern.
+MEMORY_LOG_PATH = ROOT / "logs" / "memory.jsonl"
 
 _conn: sqlite3.Connection | None = None
 _lock = threading.Lock()
@@ -132,12 +139,43 @@ def list_sessions(conn: sqlite3.Connection) -> list[tuple[str, str, int]]:
     return rows
 
 
+def _log_deletion(passage: Passage) -> None:
+    """Durable audit trail for deletions (PROMPTS.md A12, explicit
+    instruction - drift correction means actually removing wrong entries,
+    and removing the wrong entry has to be recoverable-by-record even though
+    the row itself is gone). Lives here, not in scripts/memory.py's CLI,
+    because store.delete_passage() is the one real chokepoint every deletion
+    path goes through (CLI, and by extension ui/'s memory tab, which shells
+    out to that same CLI) - logging at the call site would miss any future
+    caller that skips it."""
+    MEMORY_LOG_PATH.parent.mkdir(exist_ok=True)
+    with MEMORY_LOG_PATH.open("a") as f:
+        # asdict(passage) already has its own "timestamp" key (when the
+        # passage was originally written) - "deleted_at" for the deletion
+        # moment specifically, not "timestamp", so the two don't collide and
+        # silently overwrite each other (caught live: they did, first try -
+        # dict-literal spread ordering let asdict()'s "timestamp" clobber
+        # the deletion time, so every logged record showed the creation time
+        # twice instead of when the deletion actually happened).
+        record = {"deleted_at": datetime.now(timezone.utc).isoformat(), "stage": "delete", **asdict(passage)}
+        f.write(json.dumps(record) + "\n")
+
+
 def delete_passage(conn: sqlite3.Connection, passage_id: int) -> bool:
     with _lock:
+        row = conn.execute(
+            "SELECT id, session_id, timestamp, role, source, text FROM passages WHERE id = ?",
+            (passage_id,),
+        ).fetchone()
+        if row is None:
+            return False
         cur = conn.execute("DELETE FROM passages WHERE id = ?", (passage_id,))
         conn.execute("DELETE FROM passages_vec WHERE rowid = ?", (passage_id,))
         conn.commit()
-        return cur.rowcount > 0
+        deleted = cur.rowcount > 0
+    if deleted:
+        _log_deletion(Passage(*row))
+    return deleted
 
 
 def update_passage(conn: sqlite3.Connection, passage_id: int, text: str, embedding: list[float] | None) -> bool:

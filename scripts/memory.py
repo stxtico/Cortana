@@ -136,7 +136,7 @@ def cmd_delete(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps({"ok": ok}))
         return
-    print("Deleted." if ok else "Nothing deleted (already gone?).")
+    print(f"Deleted (logged to {store.MEMORY_LOG_PATH.relative_to(ROOT)})." if ok else "Nothing deleted (already gone?).")
 
 
 def cmd_edit(args: argparse.Namespace) -> None:

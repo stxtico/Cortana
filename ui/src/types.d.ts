@@ -29,6 +29,7 @@ export interface PendingTimer {
 
 export interface UiConfig {
   panel_opacity: number;
+  window_opacity: number; // applied at the BrowserWindow level in main.ts, not read by the renderer directly
   blur_px: number;
   accent: string;
 }

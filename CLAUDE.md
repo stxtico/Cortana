@@ -1262,6 +1262,46 @@ A8's tool-calling demands first, see Done below)
   standing A8/A9/A10 deferral, stated in the panel itself via a visible
   caption, not hidden.
 
+  **Follow-up in the same session**: two explicit requests, both landed.
+  (1) A second, independent opacity lever - `[ui].window_opacity`, the whole
+  `BrowserWindow`'s own compositor-level `opacity` option, distinct from
+  `panel_opacity`'s CSS-only background fade (text/borders stay crisp under
+  `panel_opacity`; `window_opacity` fades literally everything, including
+  text, since it's an OS/Windows-compositor multiply Chromium's own render
+  never sees). Caught a real verification-method gap proving this out:
+  `webContents.capturePage()` (this session's go-to since OS screenshotting
+  had the DPI problems described above) captures Chromium's *internal*
+  render, which is blind to window-level compositor opacity by construction
+  - two capturePage() shots at `window_opacity` 1.0 and 0.5 came back
+  pixel-identical. Had to fall back to real OS screen capture
+  (`SetProcessDPIAware()` + `GetWindowRect`/`CopyFromScreen`, the same
+  method abandoned earlier for DPI unreliability - reliable *within one
+  script invocation*, just not trustworthy across separately-invoked
+  PowerShell calls) for this one specific check, which confirmed it clearly:
+  at 0.5 the whole window - editor/terminal text behind it bleeding straight
+  through previously-opaque panel text - visibly blended with what was
+  behind it, distinct from `panel_opacity`'s panel-only fade. Reverted to
+  the correct default (1.0) after confirming.
+  (2) Real persistent audit trail for memory deletions - `delete`/edit/
+  confirmation already existed from the same session's earlier A12 pass, so
+  the actual gap was that a deletion left no durable record of what was
+  removed. `store.delete_passage()` (the one real chokepoint every deletion
+  path goes through - CLI and, by extension, `ui/`'s memory tab, which
+  shells out to that same CLI) now fetches the full row before deleting it
+  and logs it to `logs/memory.jsonl` (the same file `embeddings.py` already
+  writes `embed` records to, distinguished by `stage`) - not scattered at
+  the CLI call site, so any future caller gets the same guarantee
+  automatically. Caught a real bug in the fix itself, on first attempt: the
+  audit record's dict literal was `{"timestamp": datetime.now(...), "stage":
+  "delete", **asdict(passage)}` - but `Passage` already has its own
+  `timestamp` field (when the passage was *originally written*), and dict-
+  literal spread ordering let it silently clobber the deletion-moment
+  timestamp, so every logged record showed the creation time twice instead
+  of when the deletion actually happened. Renamed the outer key to
+  `deleted_at` and re-verified against a real store: inserted a passage,
+  waited 2 real seconds, deleted it, and confirmed the log's `deleted_at`
+  and the passage's own `timestamp` were genuinely ~2s apart, not identical.
+
 **Next**: A13 - the CAD data pipeline, per PROMPTS.md's sequencing now that
 A12 is done. A5b
 (latency, specifically the LLM TTFT residual) is still open but deliberately

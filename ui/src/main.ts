@@ -47,12 +47,13 @@ const LATENCY_SOURCES = new Set(["ears", "brain", "voice"]);
 
 interface UiConfig {
   panel_opacity: number;
+  window_opacity: number;
   blur_px: number;
   accent: string;
 }
 
 function loadUiConfig(): UiConfig {
-  const defaults: UiConfig = { panel_opacity: 0.82, blur_px: 20, accent: "#39e6ff" };
+  const defaults: UiConfig = { panel_opacity: 0.82, window_opacity: 1.0, blur_px: 20, accent: "#39e6ff" };
   try {
     // Reused source of truth, not a second TOML parser in JS - same pattern
     // ui's memory/latency panels use for the real thing (py_bridge.ts).
@@ -82,6 +83,7 @@ function createWindow(uiConfig: UiConfig): BrowserWindow {
     frame: false, // custom title bar built in renderer - see index.html/style.css
     transparent: true,
     backgroundColor: "#00000000",
+    opacity: uiConfig.window_opacity, // whole-window compositor opacity - distinct from panel_opacity's CSS-level fade, see [ui] in cortana.toml
     resizable: true,
     show: false,
     webPreferences: {

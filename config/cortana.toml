@@ -441,6 +441,26 @@ from_contains    = []
 # same "read the real TOML, don't hand-roll a second parser in JS" pattern
 # tools/set_timer.py's config reads already establish) and passes it to the
 # renderer.
-panel_opacity = 0.82   # 0-1, background alpha behind the blur
-blur_px       = 20     # backdrop-filter blur radius in the holographic panels
-accent        = "#39e6ff"   # primary cyan accent - borders, active states, glow
+#
+# Two independent opacity levers, deliberately not conflated into one number
+# (explicit instruction - tune both rather than discover the base layer is
+# wrong and have to rebuild the layering):
+#   panel_opacity  - CSS background alpha on the glass panel (#frame) only.
+#                    Text/borders/glow stay fully opaque; only the panel's
+#                    own background fades. This is what backdrop-filter:
+#                    blur() composites against, so contrast over a busy
+#                    background is controlled here.
+#   window_opacity - the whole OS window's compositing opacity
+#                    (BrowserWindow's own `opacity` option, applied in
+#                    main.ts's createWindow() - not CSS, a Windows/macOS
+#                    compositor-level multiply over the entire rendered
+#                    surface, text and all). 1.0 (fully opaque at the
+#                    window level) is the correct default - it means only
+#                    panel_opacity's more legible, text-preserving fade is
+#                    visible day to day, with window_opacity available as a
+#                    second lever if blending further into the desktop is
+#                    ever wanted without touching panel contrast.
+panel_opacity  = 0.82   # 0-1, background alpha behind the blur
+window_opacity = 1.0    # 0-1, whole-window compositor opacity - see above
+blur_px        = 20     # backdrop-filter blur radius in the holographic panels
+accent         = "#39e6ff"   # primary cyan accent - borders, active states, glow
