@@ -15,3 +15,10 @@ voice_refs/**/*.mp4
 memory_store/
 daemon_store/
 ui/dist/
+
+# Synthetic, mechanically regenerable from cad/verified/ + scripts/cad_synth.py
+# (PROMPTS.md A13) - unlike cad/verified/ itself (hand-authored scripts,
+# descriptions, and real failed-attempt history), this is derived output that
+# only grows with each synth run, same "generated state stays out of git"
+# pattern as logs/, memory_store/, daemon_store/ above.
+cad/dataset.jsonl
