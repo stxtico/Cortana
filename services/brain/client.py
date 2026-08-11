@@ -66,10 +66,20 @@ async def stream(
     messages: list[dict],
     tools: list[dict] | None = None,
     think: bool = False,
+    model: str | None = None,
+    format: str | dict | None = None,
 ) -> AsyncIterator[str]:
-    """Stream assistant tokens for one chat turn. Yields text as it arrives."""
+    """Stream assistant tokens for one chat turn. Yields text as it arrives.
+
+    model overrides [models].primary - added for A14's vision-comparison call
+    (tools/cad.py), which needs [models].vision (a different, non-resident
+    model) rather than the conversational primary. format is forwarded to
+    Ollama's own JSON-mode ("format": "json") for callers that need
+    structured output, same vision call. Both default to the prior
+    behavior (primary model, no format constraint) - existing callers are
+    unaffected."""
     models = _load_config()
-    model = models["primary"]
+    model = model or models["primary"]
     endpoint = models["endpoint"]
     keep_alive = models["keep_alive"]
 
@@ -84,6 +94,8 @@ async def stream(
         payload["options"] = {"num_ctx": models["context_window"]}
     if tools:
         payload["tools"] = tools
+    if format is not None:
+        payload["format"] = format
 
     start = time.perf_counter()
     first_token_time = None

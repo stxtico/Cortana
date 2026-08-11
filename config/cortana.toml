@@ -8,6 +8,22 @@ primary    = "gemma4:e4b"   # switched from gemma4:12b - elastic model, 3.2GB re
                              # and matched gemma4:12b on every case. See CLAUDE.md.
 heavy      = ""
 alt        = ""
+# PROMPTS.md A14 - gemma4:e4b reports "vision" in Ollama's /api/show
+# capabilities, but doesn't actually work: tested 3 request shapes
+# (/api/chat, /api/generate, the OpenAI-compat endpoint) and its own
+# reasoning trace on the third showed it received an "Image Placeholder/
+# Empty Input" token, not real pixels - a real gap in this Ollama build's
+# custom gemma4 renderer (its Modelfile's TEMPLATE is bare `{{ .Prompt }}`,
+# so image data likely never gets threaded into whatever the RENDERER
+# gemma4/PARSER gemma4 hooks actually do), not a client-side bug -
+# confirmed by the exact same code correctly describing the exact same
+# image against gemma3:12b. Used only for tools/cad.py's render-compare
+# step, and only as a weak secondary signal there (geometric validation is
+# ground truth) - a deliberate, infrequent mode-boundary swap via
+# keep_alive, same pattern already measured and accepted for heavy/CAD
+# work (8-13s cold-load cost, fine for a multi-second generation loop, not
+# fine for real-time voice turns).
+vision     = "gemma3:12b"
 endpoint   = "http://localhost:11434"
 keep_alive = "30m"
 # Explicit num_ctx for every primary-model call (services/brain/client.py) - Ollama's
@@ -370,6 +386,21 @@ distro       = "CortanaShell"
 whitelist    = ["ls", "cat", "echo", "pwd", "date", "df", "whoami", "wc"]
 sandbox_cwd  = "/root"
 timeout_s    = 15
+
+[cad]
+# tools/cad.py (PROMPTS.md A14) - generate -> execute -> validate -> render
+# -> vision-compare -> revise, reusing scripts/_cad_common.py's executor
+# and verify_solid() (A13) rather than a second implementation.
+max_iterations = 5
+# Geometric validation is ground truth (explicit instruction) - vision is a
+# weak secondary signal restricted to what a measurement can't check (does
+# the shape look right, is a feature obviously misplaced/missing), never
+# asked about anything measured exactly here, and any vision claim that
+# contradicts a measured value is discarded, not acted on. The loop
+# terminates on validator agreement, not vision approval.
+min_wall_mm = 0.8   # a common FDM minimum (2 perimeters at a 0.4mm nozzle) - not process-specific yet
+dimension_tolerance_frac = 0.15   # allowed drift between a stated overall dimension and the built solid's bounding box
+retrieval_top_k = 3   # few-shot examples pulled from cad/verified/ on every generation
 
 [tools.calendar]
 # tools/calendar_read.py - read-only (no confirmation gate; CLAUDE.md rule 4

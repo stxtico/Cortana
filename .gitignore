@@ -22,3 +22,9 @@ ui/dist/
 # only grows with each synth run, same "generated state stays out of git"
 # pattern as logs/, memory_store/, daemon_store/ above.
 cad/dataset.jsonl
+
+# tools/cad.py's working output (PROMPTS.md A14) - draft iterations, renders,
+# and exports for parts still being generated/refined. Promote a good result
+# into cad/verified/ via scripts/cad_log.py add-part if it should be kept;
+# this directory itself is scratch, same spirit as cad/dataset.jsonl above.
+cad/generated/
