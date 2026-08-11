@@ -28,3 +28,10 @@ cad/dataset.jsonl
 # into cad/verified/ via scripts/cad_log.py add-part if it should be kept;
 # this directory itself is scratch, same spirit as cad/dataset.jsonl above.
 cad/generated/
+
+# Third-party free Live2D placeholder rig + Cubism runtime (PROMPTS.md A15) -
+# fetched by scripts/fetch_live2d_placeholder.py, same reason voice_source/ is
+# gitignored above: content this project uses locally but didn't author and
+# doesn't redistribute through its own git history. Reproducible - rerun the
+# fetch script, not a manual one-off download.
+ui/assets/live2d/

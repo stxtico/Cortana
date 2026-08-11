@@ -55,5 +55,12 @@ declare global {
       editMemoryEntry: (id: number, text: string) => Promise<PyResult<{ ok: boolean; reembedded: boolean }>>;
       deleteMemoryEntry: (id: number) => Promise<PyResult<{ ok: boolean }>>;
     };
+    character: {
+      onCursorPosition: (callback: (localX: number, localY: number) => void) => void;
+      onStateChange: (callback: (state: string) => void) => void;
+      onEmotionChange: (callback: (emotion: string) => void) => void;
+      onAmplitude: (callback: (amplitude: number) => void) => void;
+      reportHover: (isHovering: boolean) => void;
+    };
   }
 }

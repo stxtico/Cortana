@@ -216,8 +216,23 @@ _PLAYBACK_SUBBLOCK_S = 0.1  # ~100ms - keeps any single blocking stream.write() 
 
 async def _write_interruptible(stream: sd.OutputStream, audio: np.ndarray, sample_rate: int) -> None:
     subblock_samples = max(1, int(sample_rate * _PLAYBACK_SUBBLOCK_S))
-    for start in range(0, len(audio), subblock_samples):
-        await asyncio.to_thread(stream.write, audio[start:start + subblock_samples])
+    try:
+        for start in range(0, len(audio), subblock_samples):
+            subblock = audio[start:start + subblock_samples]
+            await asyncio.to_thread(stream.write, subblock)
+            # PROMPTS.md A15 - live lip-sync amplitude, updated at the same
+            # ~100ms sub-block granularity this function already writes audio
+            # at, not a separate timer. Both real callers of this shared
+            # primitive (play_audio() and _play_all()) get it for free.
+            playback_state.update_amplitude(_rms(subblock))
+    finally:
+        # play_audio() (backchannels) never calls playback_state.mark_stopped() -
+        # only _play_all() does, for its own active/started_at tracking - so
+        # without this, a backchannel's last sub-block amplitude would stick
+        # after playback actually ends instead of returning to a closed mouth.
+        # Reset lives here, in the one shared primitive, rather than duplicated
+        # (and easy to forget) in each caller.
+        playback_state.update_amplitude(0.0)
 
 
 async def play_audio(audio: np.ndarray, sample_rate: int) -> None:

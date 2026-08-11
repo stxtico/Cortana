@@ -22,6 +22,7 @@ import * as fs from "fs";
 import { execFileSync } from "child_process";
 import { readLastLines, JsonlTailer, JsonRecord } from "./log_tail";
 import { runPython } from "./py_bridge";
+import { createCharacterWindow, startCharacterFeatures } from "./character_main";
 
 const ROOT = path.join(__dirname, "..", "..");
 const OLLAMA_ENDPOINT = "http://localhost:11434";
@@ -220,6 +221,15 @@ app.whenReady().then(() => {
       stopTimers();
       stopModel();
     });
+  });
+
+  // The character overlay (PROMPTS.md A15) - a second window in the same
+  // Electron app, not a separate process. Same did-finish-load-before-any-IPC
+  // discipline as the control panel window above, for the same reason.
+  const charWin = createCharacterWindow(ROOT);
+  charWin.webContents.once("did-finish-load", () => {
+    const stopCharacterFeatures = startCharacterFeatures(charWin, ROOT);
+    charWin.on("closed", stopCharacterFeatures);
   });
 });
 

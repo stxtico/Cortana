@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Cortana</title>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  #stage { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <!-- No bundler in ui/ (see A12's split tsconfig) - PIXI and the Live2D
+       runtime load as plain global-namespace scripts, same as most Live2D
+       web tutorials use them without a build step. Order matters: PIXI
+       first, then the Cubism 2 core engine, then pixi-live2d-display's
+       cubism2 bundle (which attaches PIXI.live2d.* and needs both already
+       present), then our own renderer code last. -->
+  <script src="node_modules/pixi.js/dist/browser/pixi.min.js"></script>
+  <script src="assets/live2d/core/live2d.min.js"></script>
+  <script src="node_modules/pixi-live2d-display/dist/cubism2.min.js"></script>
+  <script src="dist/character_renderer.js"></script>
+</body>
+</html>

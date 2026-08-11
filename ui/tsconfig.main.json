@@ -11,5 +11,12 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/main.ts", "src/preload.ts", "src/log_tail.ts", "src/py_bridge.ts"]
+  "include": [
+    "src/main.ts",
+    "src/preload.ts",
+    "src/character_preload.ts",
+    "src/character_main.ts",
+    "src/log_tail.ts",
+    "src/py_bridge.ts"
+  ]
 }
