@@ -5,7 +5,9 @@ and rationale — this file is the operating summary.
 
 ## Current state
 
-**Phase:** 5 — Control panel (done: A11 daemon, A12 UI; next up is 7 — CAD, A13)
+**Phase:** 5 — Control panel (done: A11 daemon, A12 UI — TypeScript, frameless
+holographic chrome, real memory edit/delete with a durable deletion audit log
+(`logs/memory.jsonl`); next up is 7 — CAD, A13)
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
