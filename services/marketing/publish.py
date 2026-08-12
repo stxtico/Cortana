@@ -147,6 +147,7 @@ def build_row(brief: Brief, script: dict, format_name: str, video_id: str, media
             "audience": brief.audience,
             "channel": brief.channel,
             "format": format_name,
+            "hook": script["hook"],  # A20 - stored as its own field so the attribution report can rank by hook, not just parse it back out of caption
             "utm_link": utm_link,
         },
     }

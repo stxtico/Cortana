@@ -71,17 +71,29 @@ wasn't." beats "AI detection is a problem."
 Return raw JSON only - no markdown fences, no commentary."""
 
 
-def _user_prompt(brief: Brief) -> str:
+def _user_prompt(brief: Brief, examples: list[str] | None = None) -> str:
     angle = _ANGLE_CONTEXT.get(brief.angle, brief.angle)
     doc_type = _DOC_TYPE_CONTEXT.get(brief.doc_type, brief.doc_type)
     audience = _AUDIENCE_CONTEXT.get(brief.audience, brief.audience)
-    return (
+    prompt = (
         f"Write one before/after pair for {doc_type}, written by {audience}. "
         f"The angle: {angle}"
     )
+    if examples:
+        # A20 - real top-performing hooks (report.py/feedback.py), never
+        # fabricated ones - only ever passed in when at least one ranking
+        # was genuinely measurable. Shown as style reference, not something
+        # to copy verbatim - the new hook still has to fit this brief's own
+        # angle/doc_type/audience, not the example's.
+        example_lines = "\n".join(f'- "{e}"' for e in examples)
+        prompt += (
+            "\n\nThese hooks measurably converted well on past videos - match their "
+            f"style and concreteness, don't copy them verbatim:\n{example_lines}"
+        )
+    return prompt
 
 
-async def generate_script(brief: Brief) -> dict:
+async def generate_script(brief: Brief, examples: list[str] | None = None) -> dict:
     """Returns {hook, aiText, beforeScore, humanText, afterScore, kicker}.
     think=False, not a config toggle - a straightforward single-turn creative
     JSON task, no tool chain to reason through (unlike agent.py's
@@ -90,7 +102,7 @@ async def generate_script(brief: Brief) -> dict:
     already documents for its own single-purpose JSON call."""
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": _user_prompt(brief)},
+        {"role": "user", "content": _user_prompt(brief, examples)},
     ]
     chunks = []
     async for token in brain_client.stream(messages, think=False, format="json"):

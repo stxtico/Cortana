@@ -2235,10 +2235,109 @@ A8's tool-calling demands first, see Done below)
   creating (public) before `publish_live` can ever succeed - both real,
   necessary, user-side setup steps, not something to fake or auto-create.
 
+- **A19 follow-up: rendered MP4s and props JSON moved out of Ghosttyper-web
+  entirely, into cortana's own `marketing_out/`.** Explicit correction:
+  those are cortana's output, not that product repo's source, and
+  `video/out/` already mixed the repo owner's own pre-existing
+  `scripts.ts`/`reels.tsx` renders with whatever this pipeline wrote there -
+  the two shouldn't share a directory. `[marketing].render_out_dir`/
+  `props_subdir` now resolve under cortana's `ROOT` (gitignored the same
+  way as `marketing_store/`) instead of `ghosttyper_web_dir/video/out` - no
+  structural change needed, since Remotion's render/still commands take an
+  absolute output path as their own CLI argument regardless of the
+  subprocess's `cwd` (which correctly stays `ghosttyper_web_dir/video`,
+  where `node_modules`/the bundle actually live). Cleaned up the three
+  leftover files an earlier test run had left in `Ghosttyper-web/video/out/`
+  (careful to delete only what matched this pipeline's own video-id naming,
+  confirmed via `find` before touching anything, never the repo owner's own
+  content or its pre-existing `stills/` directory) and re-verified the full
+  two-video batch end to end against the new location - real MP4s land in
+  `marketing_out/`, `Ghosttyper-web/video/out/` confirmed clean afterward.
+
+- **A20 - Attribution loop (`services/marketing/{attribution,report,
+  feedback}.py`).** Explicit instruction: check what conversion data
+  actually exists in Ghosttyper-web's schema before building against it,
+  since A19 already found the plan's assumptions about that repo wrong in
+  useful ways more than once. This one went deeper than expected. Read every
+  migration in `supabase/migrations/` and grepped the app code (login, the
+  auth callback, every Stripe checkout-session `metadata` block) rather than
+  assuming - real findings, not assumptions:
+  - **What's real and already exists**: `content_posts.metadata` (A19)
+    carries `angle`/`doc_type`/`format`/`utm_link` per video - `hook` was
+    missing (only baked into `caption` as prose), added as its own metadata
+    field since ranking by hook needs it distinct. `credit_ledger`'s
+    `type='signup_grant'` rows are the real "trial signup" event - granted
+    automatically by a DB trigger the instant `auth.users.email_confirmed_at`
+    is set (`20260718000200_credit_gating.sql`), keyed by `user_id`,
+    timestamped. `stripe_events` (`event_type`/`user_id`/`processed_at`) is
+    the real "paid conversion" event source.
+  - **What's genuinely missing - not "empty," structurally absent**: zero
+    UTM or referrer capture anywhere in the app. Login only uses
+    `useSearchParams()` for a post-login redirect target (`?next=`), never a
+    UTM param. Every Stripe checkout-session `metadata` block
+    (`app/api/stripe/checkout/route.ts`) carries only `supabase_user_id`/
+    `plan`/`pack` - nothing UTM-shaped. `auth.users`/`public.profiles` carry
+    no attribution column either. This means there is currently no join key
+    connecting a `content_posts` row to any user's signup or conversion at
+    all - not "the join returns zero rows," there is no column to join on
+    yet. Same gap on the denominator: `lib/instagram/client.ts` only ever
+    calls the publish-side Graph API (create container, status, publish,
+    refresh token) - Instagram Insights (reach/impressions/plays) are never
+    fetched or stored anywhere, so "views" has no real data source either.
+    Even with real batches published and real traffic, this loop could not
+    close today - a materially bigger gap than "no rows yet because
+    `publish_live` is false," which is also still separately true.
+  - **Built against a documented, not-yet-created proposal rather than
+    inventing it silently inside a live paying-customers' signup/checkout
+    flow**: `attribution.py`'s `UTM_ATTRIBUTIONS_SCHEMA` specifies the one
+    missing table precisely (`utm_content`/`user_id`/`event`, joined to the
+    already-real `stripe_events`/`credit_ledger` by `user_id`) and every
+    query probes for its real existence first (`attribution_table_exists()`,
+    a read-only check, same `is_available()`-style dormant pattern as every
+    other external dependency in this project - CLAUDE.md rule 10) rather
+    than assuming it's there. The moment a human deliberately creates that
+    table in Ghosttyper-web's own repo, every function here starts returning
+    real joined data with no code change - this pipeline doesn't touch that
+    repo's live signup/checkout code itself, since that's a materially more
+    consequential edit than A19's one additive `Root.tsx` composition block
+    and wasn't asked for.
+  - **`report.py` never fabricates a number to fill the gap**: a ranking's
+    `conversions_per_1000_views` is `None` (rendered as `"unmeasurable"`,
+    never `0` or a fake rate) whenever either side of the ratio is
+    unavailable - verified against synthetic data (real code path, fake
+    Supabase responses) that sorting, per-group aggregation, and the
+    unmeasurable-sorts-last behavior are all correct before ever touching
+    the real (currently empty) tables. `feedback.top_performing_hooks()`
+    only ever returns hooks from genuinely `measurable` rankings - real,
+    verified empty (`[]`) when nothing is measurable yet, not a guess.
+  - **`script.py` wired to accept real examples, inert until there's data
+    to feed it**: `generate_script(brief, examples=None)` folds real
+    top-performing hooks into the prompt as a style reference ("match their
+    style, don't copy them verbatim") only when `examples` is non-empty;
+    `pipeline.py` fetches `top_performing_hooks()` once per batch (not once
+    per video - one Supabase round trip, not `n` of them) and threads it
+    through. Verified live: a real batch run correctly fetched `[]` and
+    produced the identical prompt as before this change, no regression.
+  - **Done-when, stated honestly rather than claimed as closed**: the read
+    side is real, tested code against the real schema, and
+    `python -m services.marketing.report_cli` correctly reports the dormant
+    state today (`SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` still unset, so
+    it prints that plainly and stops rather than pretending to have data).
+    The loop cannot actually close yet - three real, concrete, user-owned
+    setup steps stand between here and real numbers: (1) A19's own
+    `publish_live`/Storage-bucket setup, so real `content_posts` rows start
+    existing; (2) the `utm_attributions` table (schema above) plus real UTM
+    capture-and-persist code in Ghosttyper-web's own landing/signup flow -
+    genuine product work in that repo, not something built here unprompted;
+    (3) some real source for "views" (Instagram Insights per `ig_media_id`,
+    or another mechanism) - `report.py` reads an optional
+    `content_posts.metadata.views` if anything ever populates it, but
+    nothing populates it today.
+
 **Next**: A16 - camera and ambient awareness, per PROMPTS.md's sequencing
-now that A15 is done. A18 (computer use) and A19 (marketing pipeline) are
-both done, out of the documented numbered order, per explicit instruction
-each time. A5b
+now that A15 is done. A18 (computer use), A19 (marketing pipeline), and A20
+(attribution loop) are all done, out of the documented numbered order, per
+explicit instruction each time. A5b
 (latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline

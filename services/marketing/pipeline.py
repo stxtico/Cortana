@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from services.brain import client as brain_client
-from services.marketing import brief, format_assign, publish, render, script, verify_format, verify_still
+from services.marketing import brief, feedback, format_assign, publish, render, script, verify_format, verify_still
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
@@ -55,17 +55,21 @@ def _video_id(b: brief.Brief) -> str:
     return f"{b.angle}-{b.doc_type}-{uuid.uuid4().hex[:8]}"
 
 
-async def produce_video(channel: str) -> dict:
+async def produce_video(channel: str, examples: list[str] | None = None) -> dict:
     """Runs one video through the full chain. Never raises - every stage's
     failure is caught, logged, and reflected in the returned summary so one
-    bad video doesn't kill the rest of a batch run via produce_batch()."""
+    bad video doesn't kill the rest of a batch run via produce_batch().
+
+    examples (A20): real top-performing hooks from report.py/feedback.py,
+    or None/[] when nothing is genuinely measurable yet - script.py folds
+    them into the prompt only when non-empty."""
     b = brief.generate_brief(channel)
     _log({"stage": "brief", "angle": b.angle, "doc_type": b.doc_type, "audience": b.audience, "channel": b.channel})
 
     summary = {"brief": asdict(b), "video_id": None, "format": None, "vision": None, "format_check": None, "publish": None, "ok": False, "error": None}
 
     try:
-        script_data = await script.generate_script(b)
+        script_data = await script.generate_script(b, examples)
     except Exception as exc:
         summary["error"] = f"script generation failed: {exc}"
         _log({"stage": "script_failed", "angle": b.angle, "doc_type": b.doc_type, "error": str(exc)})
@@ -138,10 +142,18 @@ async def produce_video(channel: str) -> dict:
 
 
 async def produce_batch(n: int, channel: str) -> list[dict]:
+    # Fetched once per batch, not once per video - one Supabase round trip
+    # (or none, if not configured) rather than n of them. [] whenever
+    # nothing is genuinely measurable yet (A20) - script.py treats that
+    # exactly like examples=None.
+    examples = await feedback.top_performing_hooks()
+    if examples:
+        print(f"Feeding {len(examples)} top-performing hook(s) back into generation: {examples}\n")
+
     results = []
     for i in range(n):
         print(f"[{i + 1}/{n}] generating ({channel})...")
-        result = await produce_video(channel)
+        result = await produce_video(channel, examples)
         status = "OK" if result["ok"] else "FAILED"
         print(f"  -> {status} {result['video_id'] or '(no id - failed early)'} [{result['format']}]" + (f" - {result['error']}" if result["error"] else ""))
         results.append(result)
