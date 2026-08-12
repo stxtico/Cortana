@@ -34,6 +34,26 @@ export interface UiConfig {
   accent: string;
 }
 
+export interface HologramConfig {
+  enabled: boolean;
+  character_opacity: number;
+  scanline_density: number;
+  scanline_opacity: number;
+  drift_speed: number;
+  data_texture_opacity: number;
+  data_texture_mode: string;
+  data_texture_column_width: number;
+  data_texture_fall_speed: number;
+  data_texture_glyph_swap_rate: number;
+  data_texture_trail_length: number;
+  tint_color: string;
+  tint_strength: number;
+  rim_color: string;
+  rim_intensity: number;
+  rim_width: number;
+  chromatic_offset: number;
+}
+
 declare global {
   interface Window {
     cortana: {
@@ -61,6 +81,8 @@ declare global {
       onEmotionChange: (callback: (emotion: string) => void) => void;
       onAmplitude: (callback: (amplitude: number) => void) => void;
       reportHover: (isHovering: boolean) => void;
+      getHologramConfig: () => Promise<HologramConfig>;
+      reportFrameTiming: (avgMs: number, maxMs: number, sampleCount: number) => void;
     };
   }
 }

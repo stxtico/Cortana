@@ -43,6 +43,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
+from services.ears import listening_state
 from services.ears.backchannel import BackchannelSession
 from services.ears.backchannel_pool import get_pool
 from services.ears.stt import Transcriber, Transcript
@@ -136,8 +137,22 @@ async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str
         callback=_on_audio,
     )
 
+    def _set_state(new_state: str) -> str:
+        # Drives listening_state.json (services/ears/listening_state.py) -
+        # "listening" here means waiting for the wake word (idle, in the
+        # sense the character window's wander logic cares about); anything
+        # else ("recording", "awaiting_resume") means actively engaged with
+        # an utterance. Routing every transition through this one helper
+        # instead of a call at each of the ~9 assignment sites means there's
+        # exactly one place that can get the mapping wrong, not nine.
+        if new_state == "listening":
+            listening_state.mark_idle()
+        else:
+            listening_state.mark_active()
+        return new_state
+
     utterance_id = 0
-    state = "listening"
+    state = _set_state("listening")
     utterance_frames: list[np.ndarray] = []
     recording_start = 0.0
     last_wake_time = -debounce_s
@@ -172,7 +187,7 @@ async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str
                     if on_wake is not None:
                         on_wake()
 
-                    state = "recording"
+                    state = _set_state("recording")
                     utterance_frames = []
                     vad.reset()
                     recording_start = now
@@ -195,7 +210,7 @@ async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str
                         passed = verify_phrase in transcript.text.lower()
                         _log_verify(transcript.text, latency_ms, passed)
                         if not passed:
-                            state = "listening"
+                            state = _set_state("listening")
                             utterance_frames = []
                             continue
                         verify_confirmed = True
@@ -215,7 +230,7 @@ async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str
                         passed = verify_phrase in transcript.text.lower()
                         _log_verify(transcript.text, latency_ms, passed)
                         if not passed:
-                            state = "listening"
+                            state = _set_state("listening")
                             utterance_frames = []
                             continue
 
@@ -230,7 +245,7 @@ async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str
                     if transcript.text and session is not None:
                         decision = session.handle_utterance(transcript.text, audio, sample_rate)
                         if decision.action == "yield":
-                            state = "listening"
+                            state = _set_state("listening")
                             lookback.clear()
                             yield decision.text
                         else:
@@ -249,15 +264,15 @@ async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str
                                 asyncio.ensure_future(get_pool().ensure_filled())
                             else:
                                 _log({"stage": "backchannel", "utterance_id": utterance_id, "text": None, "latency_ms": None})
-                            state = "awaiting_resume"
+                            state = _set_state("awaiting_resume")
                             resume_deadline = time.perf_counter() + decision.resume_window_s
                             vad.reset()
                     elif transcript.text:
-                        state = "listening"
+                        state = _set_state("listening")
                         lookback.clear()
                         yield transcript.text
                     else:
-                        state = "listening"
+                        state = _set_state("listening")
                         lookback.clear()
 
                     utterance_frames = []
@@ -265,7 +280,7 @@ async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str
             elif state == "awaiting_resume":
                 vad_event = vad.process_frame(frame)
                 if vad_event is not None and vad_event.kind == "start":
-                    state = "recording"
+                    state = _set_state("recording")
                     utterance_frames = [frame]
                     recording_start = time.perf_counter()
                     pre_trigger_audio = []
@@ -274,7 +289,7 @@ async def listen(on_wake: Callable[[], None] | None = None) -> AsyncIterator[str
                 elif time.perf_counter() > resume_deadline:
                     pending = session.handle_resume_timeout()
                     _log({"stage": "backchannel_timeout", "utterance_id": utterance_id, "yielded": bool(pending)})
-                    state = "listening"
+                    state = _set_state("listening")
                     lookback.clear()
                     if pending:
                         yield pending

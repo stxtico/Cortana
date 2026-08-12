@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/renderer.ts", "src/character_renderer.ts", "src/types.d.ts"]
+  "include": ["src/renderer.ts", "src/character_hologram.ts", "src/character_renderer.ts", "src/types.d.ts"]
 }

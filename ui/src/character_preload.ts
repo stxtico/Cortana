@@ -37,4 +37,14 @@ contextBridge.exposeInMainWorld("character", {
   // model's opaque pixels actually are); main is the only side that can
   // call setIgnoreMouseEvents().
   reportHover: (isHovering: boolean) => ipcRenderer.send("character:hover", isHovering),
+
+  // Holographic shader overlay (pre-A16 follow-up to A15) - [ui.hologram] in
+  // cortana.toml, read once at startup by character_main.ts, same
+  // read-real-TOML-not-a-second-parser pattern as main.ts's getUiConfig().
+  getHologramConfig: () => ipcRenderer.invoke("character:get-hologram-config"),
+  // Rolling frame-cost sample (character_renderer.ts's sampleFrameCost(),
+  // every ~10s) - main appends it to logs/character_render.jsonl, matching
+  // the project's structured-JSONL-per-service logging convention.
+  reportFrameTiming: (avgMs: number, maxMs: number, sampleCount: number) =>
+    ipcRenderer.send("character:frame-timing", avgMs, maxMs, sampleCount),
 });

@@ -53,6 +53,7 @@ from tools import (
     ask_user,
     cad,
     calendar_read,
+    computer,
     email_read,
     export_step,
     export_stl,
@@ -99,6 +100,7 @@ _ALL_TOOLS = {
     "cad_generate": cad,
     "export_step": export_step,
     "export_stl": export_stl,
+    "computer": computer,
 }
 
 

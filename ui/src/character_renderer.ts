@@ -40,6 +40,18 @@ let app: any = null;
 let currentEmotion = "neutral";
 let currentAmplitude = 0;
 
+// Frame-cost instrumentation for the hologram filter (CLAUDE.md rule 3 -
+// "instrument before you optimize", and this window is always-on-top and
+// always-running, so its per-frame cost is worth tracking on an ongoing
+// basis, not just a one-off check). Sampled every tick, reported as a
+// rolling avg/max every FRAME_REPORT_MS - not every frame, so the reporting
+// itself doesn't add meaningful overhead.
+const FRAME_REPORT_MS = 10000;
+let frameSum = 0;
+let frameMax = 0;
+let frameCount = 0;
+let frameReportElapsed = 0;
+
 async function init(): Promise<void> {
   const canvas = document.getElementById("stage") as HTMLCanvasElement;
   app = new PIXI.Application({
@@ -56,6 +68,14 @@ async function init(): Promise<void> {
 
   model.motion("idle");
 
+  const hologramConfig = await window.character.getHologramConfig();
+  applyHologram(model, hologramConfig);
+  // Matches the control panel's real translucency (panel_opacity, see
+  // [ui.hologram]'s comment in cortana.toml) - a uniform PIXI alpha over the
+  // whole rendered sprite, applied after the hologram filter so it fades
+  // everything (glow, scanlines, glyph rain included) together as one thing.
+  model.alpha = hologramConfig.character_opacity;
+
   // Lip sync has to be reapplied every frame, not set once when a new
   // amplitude value arrives - found genuinely necessary, not built
   // speculatively: the idle motion itself animates PARAM_MOUTH_OPEN_Y (part
@@ -68,6 +88,8 @@ async function init(): Promise<void> {
     if (model?.internalModel?.coreModel) {
       model.internalModel.coreModel.setParamFloat(MOUTH_PARAM, currentAmplitude);
     }
+    updateHologram(app.ticker.deltaMS);
+    sampleFrameCost(app.ticker.deltaMS);
   });
 
   // Hover-based click-through toggle (PLAN.md: click-through by default,
@@ -133,6 +155,20 @@ function setMouth(amplitude: number): void {
   // the ticker callback registered in init() applies it every frame (see
   // that comment for why a one-shot set doesn't stick).
   currentAmplitude = Math.max(0, Math.min(1, amplitude * 6));
+}
+
+function sampleFrameCost(deltaMs: number): void {
+  frameSum += deltaMs;
+  frameMax = Math.max(frameMax, deltaMs);
+  frameCount += 1;
+  frameReportElapsed += deltaMs;
+  if (frameReportElapsed >= FRAME_REPORT_MS) {
+    window.character.reportFrameTiming(frameSum / frameCount, frameMax, frameCount);
+    frameSum = 0;
+    frameMax = 0;
+    frameCount = 0;
+    frameReportElapsed = 0;
+  }
 }
 
 init();

@@ -104,10 +104,21 @@ def _on_abort_hotkey() -> None:
     # Runs on the keyboard package's hook thread, not the event loop thread -
     # call_soon_threadsafe is the real cross-thread bridge (same pattern
     # services/ears/pipeline.py uses for sounddevice's mic callback).
+    #
+    # Logs every detection unconditionally, including a press that arrives
+    # with nothing registered - previously silent. Without this, a genuine
+    # hook failure (the press never reached this callback at all - nothing in
+    # logs/agent.jsonl) and a merely mistimed one (it fired, but
+    # _current_task was already None/done) looked identical from outside the
+    # process: both just read as "nothing happened." Only the first is a real
+    # bug worth chasing.
     if _current_task is not None and _current_loop is not None and not _current_task.done():
         _current_loop.call_soon_threadsafe(_current_task.cancel)
         print("\n[ABORT] hotkey pressed - cancelling the in-progress tool call.")
         _log({"stage": "abort_hotkey", "outcome": "cancelled"})
+    else:
+        print("\n[ABORT] hotkey pressed - no task currently registered, nothing to cancel.")
+        _log({"stage": "abort_hotkey", "outcome": "no_task_registered"})
 
 
 def install_abort_hotkey(hotkey: str) -> bool:

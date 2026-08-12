@@ -371,6 +371,29 @@ input_timeout_s = 120
 enabled = true
 hotkey  = "ctrl+shift+x"
 
+[tools.computer]
+# PROMPTS.md A18 - tools/computer.py. Trigger words that force a spoken
+# confirmation regardless of what agent_safety.confirm() would otherwise be
+# invoked for - matched against the resolved element's own name/text, not
+# scanned from the model's free-text intent, same "check the real resolved
+# thing, not what was asked for" discipline the foreground-process re-check
+# uses. Vision-resolved clicks always confirm too, unconditionally - see
+# tools/_computer_vision.py's docstring for why that's separate from this list.
+confirm_triggers = ["send", "delete", "submit", "buy", "purchase", "confirm order", "pay"]
+
+# Per-application allowlist - she can drive exactly these apps, nothing else.
+# The `app` parameter's JSON-schema enum (tools/computer.py's spec()) is
+# built from this table's keys, so the model structurally cannot name an
+# app that isn't listed here - constrain the shape, don't filter content,
+# same reasoning as [tools.shell].whitelist. Empty by default in spirit
+# (only what's actually been decided safe to automate) - explorer is the
+# one entry here now because it's what this build's own end-to-end
+# verification exercises; add more deliberately, per real task, not
+# speculatively.
+[tools.computer.apps.explorer]
+match_process = "explorer.exe"
+open_command  = ["explorer.exe", "{path}"]
+
 [tools.shell]
 # PROMPTS.md A9 - runs a whitelisted command inside a DEDICATED, isolated WSL2
 # distro (tools/shell.py), never the Windows host directly and never the
@@ -495,3 +518,66 @@ panel_opacity  = 0.82   # 0-1, background alpha behind the blur
 window_opacity = 1.0    # 0-1, whole-window compositor opacity - see above
 blur_px        = 20     # backdrop-filter blur radius in the holographic panels
 accent         = "#39e6ff"   # primary cyan accent - borders, active states, glow
+
+[ui.hologram]
+# Holographic shader overlay on the Live2D character window (pre-A16 follow-up
+# to A15) - the Halo 2 Anniversary Cortana reference: scanlines, a strong blue
+# rim glow, a faint data-texture over the surface, slow vertical drift, mild
+# chromatic separation at the edges. One combined PIXI.Filter
+# (ui/src/character_hologram.ts) applied to the Live2D model sprite, not the
+# whole window - the placeholder rig stays swappable, this is a look that
+# survives the rig being replaced later. tint_color/rim_color default to the
+# same accent as the control panel above so the two windows read as one
+# system, not two different apps.
+enabled              = true
+# Matched to [ui]'s control panel so the two windows read as one system:
+# panel_opacity above is 0.82 and is the panel's real effective translucency
+# - window_opacity is 1.0 and (per its own comment above) doesn't visibly
+# fade anything day to day, so 0.82 is the number that actually matters.
+# Applied as the Live2D model's own PIXI alpha (character_renderer.ts),
+# a uniform fade over the whole rendered sprite after every hologram effect
+# - the same role panel_opacity plays for the control panel's glass.
+character_opacity    = 0.82
+scanline_density      = 220.0  # scanlines visible across the model's height - higher = finer lines
+scanline_opacity       = 0.35   # 0-1, how much each scanline darkens the pixel beneath it
+drift_speed             = 0.6    # vertical scroll speed of scanlines only, model-heights/sec - keep this low, it's meant to read as subtle. The glyph rain below has its own independent fall speed (data_texture_fall_speed) - this does NOT drive it.
+data_texture_opacity = 0.40
+# Glyph rain (ui/src/character_hologram.ts): narrow columns of falling
+# characters, rendered from a real glyph atlas (digits/letters/marks baked
+# into an offscreen canvas at startup), not noise - each column has its own
+# speed/phase, steps down one discrete row at a time rather than sliding,
+# and shows one bright lead glyph with a fading trail behind it. Masked to
+# her silhouette either way.
+# "multiply" (default): glyphs modulate her own surface brightness
+# (brighten on a stroke, mildly darken around it) rather than adding a
+# separate layer of light on top - this is what keeps it reading as part of
+# her instead of floating in front of her.
+# "additive": glyphs glow as colored light (rim_color) on top of her,
+# still gated to her actual surface - kept so the two can be compared.
+data_texture_mode           = "multiply"
+data_texture_column_width   = 20.0   # px, width of one rain column (row height is derived from this, ~1.3x taller) - legibility of individual glyphs depends on this at the window's actual on-screen size; raise it if glyphs read as noise rather than characters
+data_texture_fall_speed     = 2.5    # rows/sec baseline - each column varies 0.6x-1.4x around this so they don't fall in lockstep
+data_texture_glyph_swap_rate = 3.0   # glyph identity changes/sec, independent of the fall itself - this is most of what sells "characters", not just a moving pattern
+data_texture_trail_length   = 6.0    # rows in the fading trail behind the lead glyph
+tint_color              = "#39e6ff"  # overall holographic tint, same default as [ui].accent
+tint_strength        = 0.45   # from 0.22
+rim_color               = "#39e6ff"  # edge glow color
+rim_intensity           = 0.9    # rim glow brightness multiplier - can exceed 1 for a hotter edge
+rim_width               = 3.0    # px, how far the rim glow ring-samples/bleeds outward from her silhouette
+chromatic_offset        = 1.5    # px, RGB channel separation at the edges
+
+[ui.wander]
+# Idle wandering: on a randomised interval, she walks a short distance and
+# settles somewhere new on the same monitor - the same walk mechanism A15
+# built for cross-monitor movement (ui/src/character_main.ts's animateX()),
+# just autonomously triggered instead of only firing on the Alt+Shift+W
+# hotkey. Suppressed entirely (skipped, not queued/delayed) while she's
+# speaking or listening - services/voice/playback_state.py and the new
+# services/ears/listening_state.py are the two real signals this checks,
+# tailed the same fs.watch-plus-backstop way the character window already
+# reads playback_state.json for lip sync.
+enabled          = true
+interval_min_s   = 120.0   # 2 min - randomised per-cycle between min and max, not a fixed cadence
+interval_max_s   = 360.0   # 6 min
+distance_min_px  = 60.0    # a short walk, not a cross-room trip - stays on the current monitor, clamped to its workArea
+distance_max_px  = 220.0
