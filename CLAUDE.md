@@ -2112,6 +2112,29 @@ A8's tool-calling demands first, see Done below)
   real evidence the lever isn't persona wording") applies here too once a
   fix has already produced a real, measured improvement without reaching
   100%.
+  **`find_file` (`tools/find_file.py`): removed the multi-step search
+  reasoning from the model's job entirely instead of continuing to instruct
+  around its ~2/3 ceiling.** The chaining reliability finding above was a
+  real model ceiling, not a wording problem left to fix - so the follow-up
+  wasn't a fourth prompt rewrite, it was making the task itself need fewer
+  reasoning steps. `find_file(query)` does the recursive whitelisted-directory
+  walk in code (`tools/_fs.py`'s existing `load_whitelist()`, same whitelist
+  `list_dir`/`read_file` already use - no new directory becomes reachable),
+  matching every relative path under it against all of the query's words
+  (case-insensitive substring, all words required) and returning paths only -
+  same "constrain the shape, don't add capability" discipline as every other
+  tool here. "open the bracket part" becomes one `find_file` call plus one
+  `computer` call instead of a chain of `list_dir` calls that can bail out
+  early. Re-ran the identical three-trial test with `find_file` registered:
+  **3 of 3** now resolve the correct file (`cad/verified/bracket/part.py`) in
+  a single `find_file` call, zero wasted or wrong-branch searches, zero
+  reversion to `ask_user` - up from 2/3 chained `list_dir` calls. One
+  trial diverged in a different, orthogonal way worth noting honestly: it
+  called `read_file` instead of `computer` on the correctly-found path,
+  reading and summarizing the file's contents instead of launching it in
+  Explorer - a genuine ambiguity in what "open" means for a `.py` file
+  (show me its contents vs. launch it in an app), not a search failure -
+  `find_file` itself found the exact right file 3/3.
 now that A15 is done. A18 (computer use) is done, out of the documented
 numbered order, per explicit instruction that it be built now rather than
 waiting for A16/A17. A5b
