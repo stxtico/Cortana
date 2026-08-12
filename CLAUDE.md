@@ -2135,9 +2135,110 @@ A8's tool-calling demands first, see Done below)
   Explorer - a genuine ambiguity in what "open" means for a `.py` file
   (show me its contents vs. launch it in an app), not a search failure -
   `find_file` itself found the exact right file 3/3.
-now that A15 is done. A18 (computer use) is done, out of the documented
-numbered order, per explicit instruction that it be built now rather than
-waiting for A16/A17. A5b
+
+- **A19 - Marketing pipeline (`services/marketing/`), Ghost Typer reels
+  automation. Checked what actually existed before building anything, per
+  explicit instruction, and it changed the whole shape of the work.** None
+  of the Remotion project, the Supabase `content_posts` table, or the
+  `ghost-typer-reels` skill exist in this checkout - all three live in a
+  completely separate real repo, `C:/Users/allen/Ghosttyper-web` (a Next.js/
+  Stripe/Supabase SaaS product, its own git history, its own production
+  secrets). Both repos are on this same gaming PC, so `[marketing].
+  ghosttyper_web_dir` in `cortana.toml` is a local filesystem path -
+  "hand off to the existing Remotion project" means a local subprocess call
+  (`npx remotion render/still`), not a network hop, and "rendering stays on
+  the gaming PC" holds trivially.
+  **A second real finding, before any code was written**: `git status` in
+  Ghosttyper-web showed `video/src/Root.tsx` and `video/src/data/scripts.ts`
+  already had real uncommitted changes (the whole REELS/unique-format
+  system), and `reels.tsx` plus all seven format components were untracked
+  entirely - genuine pending work, never committed. This meant the original
+  plan to rely on `git checkout .` there as a clean rollback was wrong (it
+  would have discarded that pending work too, not just anything this
+  pipeline added) - corrected before touching the file, not after. The one
+  addition made there (five `generated-*` Composition entries in `Root.tsx`,
+  registering a stable id per selectable format for `--props`-driven
+  rendering) is instead a single clearly-delimited, comment-bounded block,
+  manually removable without git. Verified for real, not just by reading:
+  `tsc --noEmit` clean, and a real `npx remotion still` smoke-test rendered
+  correctly on the first try.
+  **Scoped to the Humanizer product only, stated plainly** - the other three
+  Ghost Typer products (text detector, image detector, desktop typer) have
+  no "document type" axis, which is what PROMPTS.md's brief spec actually
+  rotates over. Five of the six unique formats are wired
+  (`ghostreel`/`detector-scan`/`split-screen`/`giant-stat`/`grade-stamp`,
+  each format's real prop type read from its `.tsx` source, not guessed);
+  `ChatPanic` needs its own bespoke scripted-dialogue generation, not a
+  direct mapping from the canonical script shape, and wasn't built this
+  pass - extendable later the same way any of the five was added.
+  **Pipeline**: `brief.py` picks the least-recently-used (angle, doc_type,
+  audience) combo, code-enforced (`store.py`'s history), with the angle pool
+  itself restricted by channel - `detector_panic` (the student-caught-
+  cheating framing) is `paid_safe = false` in config and structurally
+  excluded from any paid batch, per the explicit ad-platform-policy
+  instruction, not left to persona wording (CLAUDE.md rule 4's whole
+  premise). `script.py` calls the existing `services/brain/client.py`
+  against the skill's craft rules quoted directly (tell-words, 88-99->5-14
+  scores, hook style). `format_assign.py` enforces no-repeat-within-N in
+  code and maps the generated script into whichever format's real prop
+  shape was assigned. `render.py` hands off to the Remotion project and
+  renders two verification stills per video at real, source-confirmed frame
+  numbers (read each format's actual `Sequence`/`interpolate` frame ranges
+  in its `.tsx` file, not a guessed fraction of duration) rather than one
+  frame number reused everywhere. `verify_still.py` reuses A14's exact
+  vision-check message shape, asks specifically for text overflow/dark-
+  logo/off-centre numbers, and - per explicit instruction - is a signal,
+  never a verdict: a real live run flagged a GiantStat score as "off-
+  centre," which is likely a false positive (that format is deliberately
+  left-aligned kinetic typography, not meant to be centered) - logged, not
+  auto-rejected, exactly the intended behavior. `verify_format.py` IS a hard
+  gate (ffprobe's width/height/pix_fmt are exact facts, not a guess) -
+  fails the batch loudly on anything but `1080,1920,yuv420p`, matching
+  PLAN.md's own words. `publish.py` builds the real `content_posts` row
+  (schema read from the actual migration, `status` never set to anything
+  but the table's own `'draft'` default - approval at `/admin/content`
+  stays the only path forward, no bypass) and a per-video UTM link
+  (`utm_source=instagram`, `utm_medium=<channel>`, `utm_campaign=<angle>`,
+  `utm_content=<video_id>`, stored in `metadata.utm_link` for A20's later
+  attribution wiring, not embedded in the caption - Instagram captions
+  don't render clickable links). Real Supabase writes are gated behind
+  `[marketing].publish_live` (default false) per explicit instruction: the
+  insert path is built for real, not stubbed, but the Storage upload still
+  happens for real even in dry-run (under a `dry-run/` key prefix) so the
+  printed row's `media_url` is a genuinely clickable public URL, not a
+  placeholder - only the `content_posts` INSERT itself is gated, since an
+  orphaned Storage object has no downstream effect on its own. Confirmed the
+  `marketing-media` bucket doesn't exist yet in Ghosttyper-web's Supabase
+  project (the only bucket found, `scan-images`, is unrelated - the image
+  detector feature) - `publish.py` checks for it and fails clearly rather
+  than silently creating storage infrastructure on a live product
+  (CLAUDE.md rule 10's reasoning applied to a bucket, not just a COM call).
+  **A real Windows subprocess bug, caught immediately by testing, not left
+  latent**: `asyncio.create_subprocess_exec("npx", ...)` raised
+  `FileNotFoundError` (WinError 2) even though `npx` works fine typed
+  directly into a shell - `npx` on Windows is `npx.cmd`, and
+  `create_subprocess_exec`'s underlying `CreateProcess` call doesn't do the
+  PATH/extension resolution a real shell does. Fixed with
+  `shutil.which(cmd[0])` before every subprocess call - resolves the real
+  path (including `PATHEXT` search) without reintroducing a shell string,
+  same argv-only discipline as `tools/shell.py`.
+  **Done-when verified for real, matching PROMPTS.md's exact wording**: one
+  command (`python -m services.marketing.pipeline --n 2 --channel organic`)
+  produced 2/2 verified real MP4s (`ffprobe`-confirmed `1080x1920 yuv420p`),
+  one correctly vision-flagged for human review, publish correctly and
+  honestly reported as skipped (no `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY`
+  configured in cortana's own `.env` yet - dormant, not faked). Every stage
+  logs to `logs/marketing.jsonl`, same structured-JSONL convention as every
+  other service. **Not yet done, stated plainly**: cortana's own `.env`
+  needs the two Supabase env vars added (same names Ghosttyper-web's own
+  `.env.example` uses) and the `marketing-media` Storage bucket needs
+  creating (public) before `publish_live` can ever succeed - both real,
+  necessary, user-side setup steps, not something to fake or auto-create.
+
+**Next**: A16 - camera and ambient awareness, per PROMPTS.md's sequencing
+now that A15 is done. A18 (computer use) and A19 (marketing pipeline) are
+both done, out of the documented numbered order, per explicit instruction
+each time. A5b
 (latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline

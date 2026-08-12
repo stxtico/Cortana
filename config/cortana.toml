@@ -581,3 +581,92 @@ interval_min_s   = 120.0   # 2 min - randomised per-cycle between min and max, n
 interval_max_s   = 360.0   # 6 min
 distance_min_px  = 60.0    # a short walk, not a cross-room trip - stays on the current monitor, clamped to its workArea
 distance_max_px  = 220.0
+
+[marketing]
+# PROMPTS.md A19 - Ghost Typer reels marketing pipeline (services/marketing/).
+# The Remotion project, the Supabase content_posts table, and the
+# ghost-typer-reels skill all live in a SEPARATE repo
+# (C:/Users/allen/Ghosttyper-web), confirmed by checking rather than assuming
+# - this checkout has none of them. Both repos are on this same machine (the
+# gaming PC), so ghosttyper_web_dir below is a local filesystem path, not a
+# network location - "hand off to the existing Remotion project" means a
+# local subprocess call, and "rendering stays on the gaming PC" holds because
+# both checkouts already are.
+ghosttyper_web_dir = "C:/Users/allen/Ghosttyper-web"
+# Relative to ghosttyper_web_dir/video, and already gitignored there
+# (confirmed against video/.gitignore) - nothing this pipeline writes needs a
+# new gitignore entry in that repo. Per-render props JSON and rendered MP4s
+# both land under out/, so "git checkout ." in that repo, plus deleting
+# out/marketing-props and out/*.mp4, fully reverts anything cortana wrote.
+render_out_dir = "out"
+props_subdir = "out/marketing-props"
+
+# Scoped to the Humanizer product only - it's the one Ghost Typer feature
+# with a real "document type" axis (essay, cover letter, ...) that brief
+# generation rotates over. The other three products (text detector, image
+# detector, desktop typer) don't have that axis and aren't built by this
+# pipeline - PROMPTS.md's brief spec ("angle x doc type x audience") only
+# fits the Humanizer framing. Not a limitation being hidden - stated plainly.
+doc_types = ["essay", "cover_letter", "personal_statement", "discussion_post", "cold_email"]
+audiences = ["student", "professional", "non_native_speaker"]
+
+# Selectable formats - the five whose prop shape maps cleanly from the
+# canonical generated script (hook/aiText/humanText/beforeScore/afterScore/
+# kicker), confirmed against each format component's real prop type in
+# Ghosttyper-web/video/src/formats/. ChatPanic (a scripted multi-turn chat)
+# needs its own bespoke generation task, not a direct mapping from that
+# shape - deliberately not built in this pass, extendable later the same way
+# any one of these five was added.
+formats = ["ghostreel", "detector-scan", "split-screen", "giant-stat", "grade-stamp"]
+# Hard rule (PROMPTS.md): no format repeats within N posts. Checked against
+# services/marketing/store.py's history, code-enforced, never left to the
+# model to self-limit - same reasoning as every other hard cap in this
+# project (A9's confirmation gate, A10's ask_user cap).
+format_no_repeat_window = 3
+
+# Landing page UTM-tagged links point here - config, not hardcoded, per rule 2.
+landing_url = "https://ghosttyper.org"
+
+# Real Supabase writes are OFF by default. When false, publish.py still does
+# the real Storage upload (so the printed row's media_url is a real,
+# clickable public URL - explicit instruction) but does NOT insert into
+# content_posts - it prints the complete row instead, so every column,
+# especially the UTM string and media_url, can be read before the first real
+# insert into a live product's database. Flip to true only after reviewing a
+# real dry-run batch.
+publish_live = false
+# Dry-run Storage uploads land under this key prefix so they're visibly
+# distinguishable from real approved-content uploads and easy to bulk-clean
+# later - not explicitly requested, added as a cheap, reversible safety
+# measure, same spirit as A7/A13's own test-data-cleanup precedent.
+dry_run_storage_prefix = "dry-run"
+# Confirmed this does NOT exist yet in Ghosttyper-web's Supabase project (the
+# only bucket found there, scan-images, is unrelated - the image-detector
+# feature). publish.py checks for it and fails clearly if missing rather than
+# silently creating storage infrastructure on a live product - create it via
+# the Supabase dashboard (public bucket) before setting publish_live = true.
+storage_bucket = "marketing-media"
+
+[[marketing.angles]]
+name = "false_positive"
+paid_safe = true
+
+[[marketing.angles]]
+name = "non_native_writer"
+paid_safe = true
+
+[[marketing.angles]]
+name = "cheap_alternative"
+paid_safe = true
+
+[[marketing.angles]]
+name = "deadline_panic"
+paid_safe = true
+
+[[marketing.angles]]
+name = "detector_panic"
+# The student-caught-cheating framing. Meta/TikTok both restrict
+# academic-dishonesty framing and this is the angle most likely to get
+# creative rejected or an ad account flagged (explicit instruction) -
+# excluded from paid rotation entirely, kept for organic.
+paid_safe = false
