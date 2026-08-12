@@ -59,15 +59,25 @@ def _load_config() -> dict:
 
 
 def _video_dir(config: dict) -> Path:
+    # Where the Remotion project actually lives - real source code in a
+    # separate repo, only ever used as the subprocess cwd (node_modules/the
+    # bundle resolve from here). Generated artifacts do NOT live under this
+    # - see _props_dir()/_out_dir() below.
     return Path(config["ghosttyper_web_dir"]) / "video"
 
 
 def _props_dir(config: dict) -> Path:
-    return _video_dir(config) / config.get("props_subdir", "out/marketing-props")
+    # Relative to cortana's own ROOT, not _video_dir() - props JSON is
+    # cortana's own working state, same as marketing_store/'s pattern, not
+    # something that belongs inside the product repo Remotion lives in.
+    return ROOT / config.get("props_subdir", "marketing_out/props")
 
 
 def _out_dir(config: dict) -> Path:
-    return _video_dir(config) / config.get("render_out_dir", "out")
+    # Same reasoning as _props_dir() - rendered MP4s are cortana's output,
+    # not Ghosttyper-web's source, even though the render command that
+    # produces them runs with that repo as its cwd.
+    return ROOT / config.get("render_out_dir", "marketing_out")
 
 
 @dataclass

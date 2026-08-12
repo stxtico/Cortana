@@ -15,6 +15,7 @@ voice_refs/**/*.mp4
 memory_store/
 daemon_store/
 marketing_store/
+marketing_out/
 ui/dist/
 
 # Synthetic, mechanically regenerable from cad/verified/ + scripts/cad_synth.py

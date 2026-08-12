@@ -593,13 +593,17 @@ distance_max_px  = 220.0
 # local subprocess call, and "rendering stays on the gaming PC" holds because
 # both checkouts already are.
 ghosttyper_web_dir = "C:/Users/allen/Ghosttyper-web"
-# Relative to ghosttyper_web_dir/video, and already gitignored there
-# (confirmed against video/.gitignore) - nothing this pipeline writes needs a
-# new gitignore entry in that repo. Per-render props JSON and rendered MP4s
-# both land under out/, so "git checkout ." in that repo, plus deleting
-# out/marketing-props and out/*.mp4, fully reverts anything cortana wrote.
-render_out_dir = "out"
-props_subdir = "out/marketing-props"
+# Relative to cortana's own ROOT, not ghosttyper_web_dir - Ghosttyper-web is
+# a separate product repo (real source code, real revenue), and rendered
+# MP4s/props JSON are cortana's output, not that repo's source. Remotion's
+# render/still commands take an absolute output path as their own CLI
+# argument regardless of the subprocess's cwd (which stays
+# ghosttyper_web_dir/video, since that's where node_modules/the bundle
+# live), so pointing these here needed no structural change to render.py -
+# only where the two path helpers resolve to. Gitignored the same way as
+# marketing_store/ above.
+render_out_dir = "marketing_out"
+props_subdir = "marketing_out/props"
 
 # Scoped to the Humanizer product only - it's the one Ghost Typer feature
 # with a real "document type" axis (essay, cover letter, ...) that brief
