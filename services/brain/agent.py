@@ -82,7 +82,15 @@ _TOOL_USE_INSTRUCTION = (
     "Tools are available below. If answering requires information you don't "
     "already know for certain - a file's contents, a directory listing, a web "
     "search result - call the appropriate tool. Don't guess, and don't just "
-    "describe what you're about to do in words; actually call it."
+    "describe what you're about to do in words; actually call it. If you don't "
+    "have an exact file path or filename for something the user described "
+    "(e.g. 'the bracket part'), search for it with list_dir/read_file within "
+    "the whitelisted directories first - only ask_user if a real search "
+    "doesn't turn up a confident match. A missing exact name is not the same "
+    "as a missing file - check before asking. One empty or irrelevant "
+    "directory doesn't mean the search failed - if list_dir shows other "
+    "subdirectories that could plausibly hold the target, check those too "
+    "before concluding it isn't there. Don't stop at the first dead end."
 )
 
 # Every agent-callable tool, name -> module (each exposes spec() + async execute()).

@@ -48,6 +48,7 @@ password-flagged field refuses unconditionally, no confirmation offered -
 the instruction was "never," not "confirm first."
 """
 
+import asyncio
 import json
 import tomllib
 from dataclasses import dataclass
@@ -74,6 +75,7 @@ class _Target:
     name: str
     resolved_via: str
     is_password: bool = False
+    hwnd: int | None = None  # only set for uia-resolved targets - what the focus step below actually foregrounds
 
 
 def _load_config() -> dict:
@@ -89,6 +91,17 @@ def _log(record: dict) -> None:
     LOG_PATH.parent.mkdir(exist_ok=True)
     with LOG_PATH.open("a") as f:
         f.write(json.dumps({"timestamp": datetime.now(timezone.utc).isoformat(), **record}) + "\n")
+
+
+def _progress(stage: str) -> None:
+    """Real-time stage visibility to stdout - same "print, don't just log"
+    precedent as agent_safety.confirm()'s "[CONFIRMATION NEEDED]" line. Added
+    specifically so a human running this live can see which stage is
+    in-flight and choose the moment to press the abort hotkey (most
+    meaningfully during "moving cursor" - that's the whole point of the
+    performance layer, per PLAN.md's own framing), not a test-only add - this
+    is useful the same way in real conversational use."""
+    print(f"[computer] {stage}")
 
 
 def spec() -> dict:
@@ -151,7 +164,7 @@ async def _resolve(app_cfg: dict, target: str) -> _Target | None:
     if process_match:
         uia_result = _computer_uia.resolve(process_match, name=target)
         if uia_result is not None:
-            return _Target(uia_result.center_x, uia_result.center_y, uia_result.name, "uia", uia_result.is_password)
+            return _Target(uia_result.center_x, uia_result.center_y, uia_result.name, "uia", uia_result.is_password, uia_result.hwnd)
 
     playwright_cfg = app_cfg.get("playwright", {})
     if playwright_cfg:
@@ -181,10 +194,14 @@ async def _perform_click(x: int, y: int, double: bool) -> None:
     attempt to swallow CancelledError, so an abort mid-sequence propagates
     straight out to services/brain/agent.py's _call_tool(), which reports it
     as "Aborted by user (hotkey)"."""
+    _progress(f"walking toward x={x}...")
     request_id = walk_signal.request_walk(x)
-    walk_signal.wait_for_arrival(request_id, timeout_s=5.0)
+    arrived = await walk_signal.wait_for_arrival(request_id, timeout_s=5.0)
+    _progress("arrived, working" if arrived else "walk signal timed out (character window not running?) - proceeding anyway")
     try:
+        _progress(f"moving cursor to ({x}, {y})...")
         await _computer_input.move_cursor_eased(x, y, duration_s=0.5)
+        _progress("clicking")
         await _computer_input.click("left")
         if double:
             await _computer_input.click("left")
@@ -205,6 +222,21 @@ async def execute(app: str, action: str, path: str | None = None, target: str | 
         open_command = app_cfg.get("open_command")
         if not open_command:
             return f"Error: {app!r} has no configured open_command."
+        # Real bug, found live: a model-guessed path that doesn't exist (e.g.
+        # a hallucinated "bracket part" instead of a real search hit) used to
+        # be reported as a false success, because the exit-code-is-
+        # informational-only handling below (needed for explorer.exe's own
+        # quirk) had no accompanying check that path itself was real. Verify
+        # before declaring done (CLAUDE.md rule 6) applies to a tool's own
+        # return value, not just human verification - so path is checked to
+        # actually exist before ever invoking open_command on it.
+        if path:
+            resolved_path = Path(path)
+            if not resolved_path.is_absolute():
+                resolved_path = ROOT / resolved_path
+            if not resolved_path.exists():
+                _log({"stage": "action", "app": app, "action": "open", "path": path, "resolved_via": "cli", "result": "not_found"})
+                return f"Error: {path!r} doesn't exist - not opening it. Search with list_dir/read_file for the real location first."
         # explorer.exe (and several other GUI-launching Windows commands)
         # routinely exit non-zero even on real success - it hands the request
         # off to the already-running shell process and its own launcher exit
@@ -218,10 +250,26 @@ async def execute(app: str, action: str, path: str | None = None, target: str | 
     if target is None:
         return "Error: 'target' is required for click/double_click/type."
 
+    _progress(f"resolving {target!r} in {app} (accessibility tree first)...")
     resolved = await _resolve(app_cfg, target)
     if resolved is None:
         _log({"stage": "action", "app": app, "action": action, "target": target, "resolved_via": None, "result": "not_found"})
         return f"Couldn't find {target!r} in {app} through any resolution method."
+    _progress(f"resolved via {resolved.resolved_via}: {resolved.name!r} at ({resolved.x}, {resolved.y})")
+
+    # Establish focus herself rather than depending on the user having
+    # already clicked into the target app - real autonomous use ("open the
+    # bracket file") can't assume that. Best-effort only: SetForegroundWindow
+    # from a background process is unreliable by Windows' own design
+    # (confirmed empirically - see tools/_computer_uia.focus_window()'s
+    # docstring for the real numbers, not assumed). The safety property is
+    # unchanged either way - the live re-check immediately below still runs
+    # and still refuses exactly as before if this didn't land or landed on
+    # the wrong process; this step only changes whether she has to depend on
+    # someone else establishing that state first.
+    if resolved.hwnd is not None:
+        _computer_uia.focus_window(resolved.hwnd)
+        await asyncio.sleep(0.15)  # a brief real wait for the OS focus change to actually land before re-checking
 
     # Live re-check, immediately before synthesizing anything - not trusted
     # from when the target was resolved, in case a different window grabbed

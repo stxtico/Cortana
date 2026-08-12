@@ -20,6 +20,7 @@ discipline playback_state.py's own docstring gives for why it's safe for
 multiple readers to poll a file only one process ever writes.
 """
 
+import asyncio
 import json
 import sys
 import time
@@ -73,13 +74,22 @@ def signal_idle() -> str:
     return request_id
 
 
-def wait_for_arrival(request_id: str, timeout_s: float = 5.0) -> bool:
+async def wait_for_arrival(request_id: str, timeout_s: float = 5.0) -> bool:
     """Polls computer_walk_status.json (Electron-written) until it shows this
     exact request_id has arrived, or timeout_s elapses. A plain poll, not
     fs.watch-equivalent - this is a short, bounded wait inside one tool call,
     not a long-lived background listener, so the simpler mechanism is enough
     here (unlike the Electron side, which does use fs.watch since it's
-    watching continuously across the whole window's lifetime, not one call)."""
+    watching continuously across the whole window's lifetime, not one call).
+
+    async, using await asyncio.sleep() rather than a plain blocking
+    time.sleep() loop - found necessary, not stylistic: a synchronous sleep
+    inside an async function has no suspension point, so
+    services/brain/agent_safety.py's abort hotkey (which cancels via
+    asyncio.Task.cancel(), only effective at an await) could not have
+    interrupted this wait at all before this fix - the kill switch would
+    have silently not worked for the entire arrival-wait phase of every
+    computer-use action, not just been slower than intended."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
@@ -88,5 +98,5 @@ def wait_for_arrival(request_id: str, timeout_s: float = 5.0) -> bool:
                 return True
         except (FileNotFoundError, json.JSONDecodeError):
             pass
-        time.sleep(_ARRIVAL_POLL_S)
+        await asyncio.sleep(_ARRIVAL_POLL_S)
     return False

@@ -2029,21 +2029,89 @@ A8's tool-calling demands first, see Done below)
   tree, and are present on disk right now - A13's pipeline did accumulate
   real training data as intended; nothing was lost. Recorded here so the
   false alarm doesn't get rediscovered the same way twice.
-  **Known limitation, stated plainly**: a fully clean, single unattended
-  script capture of the entire click sequence (walk -> cursor -> click)
-  firing start-to-finish against a real Explorer file wasn't obtained this
-  session - the sandboxed test terminal kept regaining OS foreground focus
-  between subprocess calls, which the live, real, working foreground
-  allowlist re-check correctly refused every time (exactly as designed).
-  Each real component (kill switch, UIA resolution post-fix, the
-  foreground re-check itself, the performance layer's file-signal
-  handshake, vision-with-mandatory-confirm) was verified individually,
-  live, for real - not a single combined run through all of them at once
-  with a human actually available to keep focus on the target app. Worth
-  a real end-to-end pass the next time someone's actually at the keyboard,
-  same category of deferral as A9's physical-keypress note.
-
-**Next**: A16 - camera and ambient awareness, per PROMPTS.md's sequencing
+  **Resolved in a follow-up session, not left as a deferral**: a human-attended
+  single-command test (`scripts/computer_e2e_test.py`, wired through the same
+  `register_current_task`/`clear_current_task` the real dispatcher uses so the
+  real abort hotkey works against it) ran the full walk -> cursor -> click
+  chain start-to-finish with a real person keeping Explorer focused - clean
+  full-chain success on one run, a clean mid-motion abort on another. Found
+  and fixed one real bug along the way: `services/character/walk_signal.py`'s
+  `wait_for_arrival()` was synchronous (`time.sleep()` inside an `async def`
+  with no real `await` point), which meant the abort hotkey had nothing to
+  land on during the arrival-wait phase specifically - the kill switch would
+  not have worked during that window. Fixed by making it genuinely `async`
+  (`await asyncio.sleep()`), re-verified against the same live abort test.
+  **Self-focus, built and empirically verified rather than assumed**: the
+  sequence originally only worked if the user had already clicked into the
+  target app first - real autonomous use ("open the bracket file") can't
+  depend on that. Added a focus step (`tools/_computer_uia.py`'s
+  `focus_window()`) that runs right before the existing live foreground
+  re-check, not instead of it - same safety property, just who establishes
+  the precondition changes. Tested directly whether a bare
+  `win32gui.SetForegroundWindow()` from this background process actually
+  works, per explicit instruction to report the real answer rather than
+  assume: it doesn't reliably - a real, repeated test hit Windows' documented
+  foreground-lock protection (error 258, "the wait operation timed out").
+  Fixed with the standard legitimate workaround, not a hack around the
+  restriction: one real synthetic Alt keypress sent first (the same
+  scan-code-resolved `keybd_event` mechanism the kill-switch build already
+  established as load-bearing), which registers "recent input" with the OS -
+  one of Windows' own documented allowance conditions. Verified 3/3 with the
+  fix in place. User independently re-ran the full e2e test afterward and
+  confirmed both the focus step and the walk phase worked live, unprompted:
+  "I pressed Enter with the terminal still focused and it proceeded anyway,
+  so she foregrounded Explorer herself."
+  **"Open the bracket part" (no path given) - tested through the real
+  `agent.run_agent()` loop, not by calling `computer` directly, per explicit
+  instruction: "so this may be less about new capability than about whether
+  the loop actually does it."** First real result was a clean failure, not a
+  success: given only the vague description, she called `ask_user` on the
+  very first turn - `logs/agent.jsonl` showed zero `list_dir`/`read_file`
+  calls anywhere in the trace. Diagnosed per the user's own steer ("A8 found
+  spec wording was the lever for list_dir, and A10 found the same for
+  ask_user, so that's the first place I'd look") - and it was, but not the
+  instruction text first tried. Adding a "search before asking" clause to
+  `agent.py`'s `_TOOL_USE_INSTRUCTION` (the merged system-prompt text) alone
+  changed nothing, re-tested in isolation from `persona.md` to rule out
+  competing instructions - still a direct `ask_user` call, zero searches. The
+  real lever was `tools/ask_user.py`'s own spec `description`, which
+  literally named "a filename" as canonical grounds to ask - a closer, more
+  specific match to the model's decision than a paragraph in the system
+  prompt. Rewording it to exclude a filename that hasn't actually been
+  searched for yet got real `list_dir` calls firing - but exposed a second,
+  narrower gap: the model checked `cad/generated` (empty), got a dead end,
+  and asked instead of also trying `cad/verified`. One more spec clause
+  (`_TOOL_USE_INSTRUCTION`: "one empty or irrelevant directory doesn't mean
+  the search failed... don't stop at the first dead end") fixed that too, on
+  the next trial - but the trial after *that* one skipped search entirely
+  and guessed a path directly (`computer` called with `path="bracket part"`,
+  a string that isn't a real path at all), exposing a real, separate tool
+  bug while doing it:
+  `computer`'s `action="open"` branch never checked whether `path` actually
+  existed before invoking `explorer.exe` on it - the exit-code-is-
+  informational-only handling (needed for real success, see above) had no
+  accompanying reality check, so a hallucinated path was reported as a false
+  "Opened" success. Fixed by verifying `path` resolves to something real
+  before ever invoking the open command (CLAUDE.md rule 6 - verify before
+  declaring done - applied to a tool's own return value, not just human
+  verification). **With every fix in place, ran the identical test three
+  times to get an honest reliability read rather than trusting one green
+  run**: 2 of 3 produced the full correct chain (`list_dir(cad)` ->
+  `list_dir(cad/generated)` -> `list_dir(cad/verified)` -> `computer(open,
+  explorer, "cad/verified/bracket")`); the third reverted to an immediate
+  `ask_user` with zero searches, same as the original failure. **Honest
+  answer to "where does it break": both named causes were real, not one or
+  the other.** Spec wording was a genuine, fixable lever (ask_user's own
+  description was actively inviting the failure it now avoids), but even
+  with the clearest wording found, multi-step search-before-guess isn't
+  deterministic - it now succeeds roughly 2/3 of the time, not every time,
+  which lines up almost exactly with A5a's independently-measured ceiling
+  for other persona/instruction-driven behaviors on this model. Not chasing
+  a fourth wording pass to close that last third - this project's own A5a
+  precedent ("two different rule phrasings converging on the same rate is
+  real evidence the lever isn't persona wording") applies here too once a
+  fix has already produced a real, measured improvement without reaching
+  100%.
 now that A15 is done. A18 (computer use) is done, out of the documented
 numbered order, per explicit instruction that it be built now rather than
 waiting for A16/A17. A5b

@@ -36,9 +36,14 @@ def spec() -> dict:
             "name": "ask_user",
             "description": (
                 "Ask the user a clarifying question when something necessary is genuinely "
-                "missing or ambiguous - a filename, a dimension, which of several options - "
-                "rather than guessing. Spoken aloud; the answer comes back as plain text. "
-                "Limited to one per turn - don't call this more than once in the same turn."
+                "missing or ambiguous - a dimension, which of several options, or a filename "
+                "that a real list_dir/read_file search within the whitelisted directories "
+                "couldn't resolve - rather than guessing. Not for a filename you haven't "
+                "actually searched for yet: if the user named a file or part descriptively "
+                "(e.g. 'the bracket part') and you haven't called list_dir/read_file to look "
+                "for it, do that first - only ask if the search comes up empty or ambiguous. "
+                "Spoken aloud; the answer comes back as plain text. Limited to one per turn - "
+                "don't call this more than once in the same turn."
             ),
             "parameters": {
                 "type": "object",

@@ -35,6 +35,43 @@ class ResolvedElement:
     center_y: int
     is_password: bool
     process_name: str
+    hwnd: int  # the top-level window's real handle - what focus_window() below actually foregrounds
+
+
+def focus_window(hwnd: int) -> bool:
+    """Attempts to bring hwnd to the real OS foreground, returns whether it
+    actually landed there - a best-effort establish, not a guarantee.
+    tools/computer.py's execute() still runs the existing live
+    foreground_process_name() re-check after calling this and refuses
+    exactly as before if it didn't land or landed on the wrong process; this
+    function only changes whether she has to depend on the user already
+    having focused the target, not what happens when she can't.
+
+    A bare win32gui.SetForegroundWindow() from a background process is
+    unreliable by Windows' own design (the well-known foreground-lock
+    protection) - confirmed empirically, not assumed: three real attempts
+    from this exact process context, no synthetic input sent beforehand,
+    succeeded once and failed twice with the documented error 258
+    ("the wait operation timed out" - Windows' actual wording for the
+    foreground-lock refusal). The standard, legitimate fix - not a
+    workaround that papers over the restriction, but one that genuinely
+    satisfies it - is sending one real synthetic key event first, which
+    registers this process as having "recent input" in Windows' own terms,
+    one of the documented conditions SetForegroundWindow honors. Re-verified
+    3/3 with this fix in place before shipping it. Uses the same
+    scan-code-resolved keybd_event tools/_computer_input.py's own docstring
+    documents as load-bearing (a bare virtual-key code with no scan code
+    silently fails to reach some consumers of injected input, found during
+    the kill-switch build)."""
+    VK_MENU = 0x12
+    scan = win32api.MapVirtualKey(VK_MENU, 0)
+    win32api.keybd_event(VK_MENU, scan, 0, 0)
+    win32api.keybd_event(VK_MENU, scan, win32con.KEYEVENTF_KEYUP, 0)
+    try:
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        return False
+    return win32gui.GetForegroundWindow() == hwnd
 
 
 def foreground_process_name() -> str:
@@ -165,6 +202,7 @@ def resolve(
                 center_x=center_x,
                 center_y=center_y,
                 is_password=_is_password(info),
+                hwnd=window.handle,
                 process_name=process_match,
             )
     return None
