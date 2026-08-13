@@ -24,6 +24,29 @@ alt        = ""
 # work (8-13s cold-load cost, fine for a multi-second generation loop, not
 # fine for real-time voice turns).
 vision     = "gemma3:12b"
+# PROMPTS.md A22 - a real, deliberately separate config key from `vision`
+# above, not a repurposing of it. `vision` is A14's already-validated choice
+# for tools/cad.py's open-ended description/comparison checks ("does this
+# match the description," "is anything misplaced") - general reasoning over
+# an image, exactly what gemma3:12b is for. tools/computer.py's grounding
+# fallback needs a categorically different thing: a single (x,y) click
+# coordinate, not a description - conflating the two under one config key
+# would have silently handed the CAD vision check a narrow, RL-trained
+# grounding specialist that's actively trained AWAY from verbose reasoning
+# (GTA1's own paper: rewards successful clicks over Chain-of-Thought), the
+# wrong tool for that job.
+# Benchmarked against gemma3:12b and Holo2-8B on a real 33-target set built
+# from this machine's own Explorer/VS Code/Chrome/Windows Terminal/cortana's
+# own control panel (not published ScreenSpot-Pro numbers - the whole point
+# of this benchmark was verifying that public rankings don't transfer):
+# GTA1-7B 81.8% overall (100% easy / 68.4% hard) vs Holo2-8B 51.5% (85.7% /
+# 26.3%) - GTA1-7B clearly won despite scoring LOWER than Holo2-8B on
+# published ScreenSpot-Pro (50.1% vs 58.9%), see docs/history/A22.md.
+# Imported into Ollama via a local Modelfile (`FROM`/`ADAPTER` pointing at
+# the downloaded GGUF + mmproj) - real vision confirmed working via a live
+# inference call before trusting `ollama create`'s own "success" (A14's own
+# lesson: model-creation success and working vision are not the same claim).
+vision_grounding = "gta1-7b"
 endpoint   = "http://localhost:11434"
 keep_alive = "30m"
 # Explicit num_ctx for every primary-model call (services/brain/client.py) - Ollama's

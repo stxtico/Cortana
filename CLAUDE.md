@@ -5,11 +5,11 @@ and rationale — this file is the operating summary.
 
 ## Current state
 
-**Phase:** 8 — The character (done: A15 - Live2D placeholder rig, gaze
-tracking, multi-monitor walking, lip sync driven by real TTS amplitude, all
-verified against the real desktop; a pre-A16 follow-up added a configurable
-holographic shader overlay (`[ui.hologram]`) on top of the placeholder rig;
-next up is A16, camera/ambient awareness)
+**Phase:** 8 — The character (A15 done, holographic shader follow-up done); A18
+(computer use), A19 (marketing pipeline), A20 (attribution loop), A21 (delegation), and
+A22 Step 1 (grounding upgrade) have all run ahead of the documented order, per explicit
+instruction each time. A22 Steps 2-4 in progress next; A16/A17 (camera/ambient awareness)
+are the next fully-untouched phase after that.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -116,12 +116,23 @@ A8's tool-calling demands first, see Done below)
   below) — takes down a worker's entire OS process tree (confirmed against 24 real PIDs
   including 8 live `chrome-headless-shell.exe`), not just the top-level PID.
   [docs/history/A21.md](docs/history/A21.md)
+- **A22 Step 1** — Grounding upgrade (in progress; Steps 2-4 not started). Benchmarked
+  GTA1-7B vs Holo2-8B on a real 33-target set built from this machine's own apps (not
+  published ScreenSpot-Pro numbers) — GTA1-7B won decisively (81.8% vs 51.5%), inverting
+  the published ranking (Holo2 58.9% vs GTA1 50.1%), the clearest evidence yet for
+  benchmarking on real screens. Along the way, found and fixed a real bug in
+  `tools/_computer_uia.py`'s `resolve()` — it couldn't connect to VS Code/Chrome/Electron
+  apps at all (not "picked the wrong process," `ProcessNotFoundError` outright), silently
+  zeroing UIA coverage on exactly the multi-process apps that matter most; real baseline
+  went from 39.4% to 75.8% after the fix, no model swap needed. `[models].vision_grounding
+  = "gta1-7b"` now live in `tools/computer.py`'s resolution path (kept deliberately
+  separate from `[models].vision`, which `tools/cad.py` still uses for a different task).
+  [docs/history/A22.md](docs/history/A22.md)
 
-**Next**: A16 - camera and ambient awareness, per PROMPTS.md's sequencing
-now that A15 is done. A18 (computer use), A19 (marketing pipeline), A20
-(attribution loop), and A21 (delegation) are all done, out of the
-documented numbered order, per
-explicit instruction each time. A5b
+**Next**: A22 Steps 2-4 (cross-validate UIA against vision/set-of-mark prompting, verify
+actions instead of firing blind, then read-only screen awareness) — per explicit
+instruction, worked ahead of A16/A17 (camera/ambient awareness), which are still the
+next fully-untouched phase after A22 wraps. A5b
 (latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline

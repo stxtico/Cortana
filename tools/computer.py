@@ -1,14 +1,29 @@
-"""computer (PROMPTS.md A18) - GUI automation: resolves a target through the
-accessibility tree first (tools/_computer_uia.py, Windows UI Automation),
+"""computer (PROMPTS.md A18/A22) - GUI automation: resolves a target through
+the accessibility tree first (tools/_computer_uia.py, Windows UI Automation),
 then Playwright for browsers (tools/_computer_playwright.py, dormant until a
 debug-port browser exists), then a CLI recipe where one is configured
-(tools/_computer_cli.py), and only as an absolute last resort, vision +
-coordinates (tools/_computer_vision.py). This ordering isn't a preference -
-A14's CLAUDE.md entry found the vision model this project uses fabricates
-specific wrong claims about an image rather than admitting uncertainty, and
-separately produced a real false negative even in an already-hardened setup.
-Pixel-coordinate clicking driven by a model that invents details is the worst
-combination available here, so it only ever runs when every other tier misses.
+(tools/_computer_cli.py), and only as a last resort, a purpose-built
+grounding model + coordinates (tools/_computer_vision.py, [models].
+vision_grounding = gta1-7b as of A22 - see below). This ordering isn't a
+preference against vision as a category - A22 found that was too broad a
+conclusion from A14's finding, which was really about gemma3:12b (a
+general-purpose VLM) being the wrong tool for click-coordinate grounding
+specifically, not that vision-based grounding is inherently unreliable.
+GTA1-7B, a model trained via RL specifically to output grounded click
+coordinates (not verbose reasoning), measured 81.8% accuracy on a real
+33-target benchmark built from this machine's own Explorer/VS Code/Chrome/
+Terminal/cortana's-own-UI (100% easy / 68.4% hard - see docs/history/A22.md)
+- a different class of result than gemma3:12b's fabrication/false-negative
+failures. UIA still goes first regardless, not because the grounder can't be
+trusted at all, but because UIA is *exact* where it resolves (A22 also fixed
+a real bug in _computer_uia.resolve() that had silently zeroed out UIA
+coverage on VS Code/Chrome/Electron apps - the true UIA baseline is 75.8%,
+not the 39.4% first measured) - every target UIA recovers is certain, not
+probabilistic, so it stays authoritative ahead of any model. The grounder is
+still real last resort, not upgraded to co-equal: 81.8% isn't good enough to
+act on unconfirmed, which is why vision-resolved clicks still always require
+confirmation below, unconditionally - that hasn't changed with the model
+swap, only the specific numbers behind why.
 
 Every click/type goes through the real performance layer (walk -> working
 state -> eased cursor move -> pause -> click), never an instant teleport -
@@ -175,7 +190,7 @@ async def _resolve(app_cfg: dict, target: str) -> _Target | None:
             if pw_result is not None:
                 return _Target(pw_result.center_x, pw_result.center_y, pw_result.name, "playwright")
 
-    vision_model = _load_config().get("models", {}).get("vision", "")
+    vision_model = _load_config().get("models", {}).get("vision_grounding", "")
     if vision_model:
         vision_result = await _computer_vision.resolve(vision_model, target)
         if vision_result is not None:

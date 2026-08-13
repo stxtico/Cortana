@@ -1,7 +1,10 @@
-"""Vision + coordinates target resolution (PROMPTS.md A18) - the last-resort
-tier, only reached when UI Automation, Playwright, and CLI recipes have all
-failed to resolve a target. Reuses [models].vision (gemma3:12b, A14's already-
-validated choice) via services/brain/client.py's stream(model=..., format=...),
+"""Vision + coordinates target resolution (PROMPTS.md A18/A22) - the
+last-resort tier, only reached when UI Automation, Playwright, and CLI
+recipes have all failed to resolve a target. Uses [models].vision_grounding
+(gta1-7b as of A22, replacing gemma3:12b - a deliberately separate config key
+from [models].vision, which tools/cad.py's description/comparison checks
+still use; see config/cortana.toml's own comment for why the two shouldn't
+share one key) via services/brain/client.py's stream(model=..., format=...),
 the exact message-shape precedent tools/cad.py's _vision_check() already
 established: {"role": "user", "content": prompt, "images": [base64...]}.
 
@@ -9,17 +12,22 @@ Every click resolved through this module requires confirmation regardless of
 what the action does (tools/computer.py's execute() enforces this, not this
 module) - a deliberate decision made explicit with the user during this
 build, not the module-level default reasoning that gates the four named
-action categories (send/delete/purchase/submit). The reason is specific to
-this tier: A14's CLAUDE.md entry found this exact model fabricates specific
-wrong claims about an image rather than admitting uncertainty when asked to
-critique, and separately produced a real false negative even in an already-
-hardened setup. A "harmless" vision-resolved click isn't harmless here
-because the *target itself* is unreliably identified, not because the action
-is risky - the same reasoning A14 used to make geometric validation, not
-vision, the ground truth for CAD. There's no equivalent geometric ground
-truth for an arbitrary GUI click, so the confirmation prompt is what fills
-that role instead: it must state plainly that the target was vision-resolved
-and describe what the model believes it's about to click, so a
+action categories (send/delete/purchase/submit). A14's original reasoning
+here was that gemma3:12b (a general-purpose VLM) fabricates specific wrong
+claims about an image rather than admitting uncertainty - A22 found that was
+too broad a conclusion (general-purpose VLMs are unreliable at GUI grounding,
+but purpose-built grounding models are a different class of thing: GTA1-7B
+measured 81.8% on a real 33-target benchmark built from this machine's own
+apps, not gemma3:12b's failure pattern - see docs/history/A22.md). The
+confirmation requirement stays regardless: 81.8% (68.4% on hard/icon-only
+targets specifically) still isn't accurate enough to act on unconfirmed, so
+a "harmless" vision-resolved click still isn't harmless here, just for a
+different, better-quantified reason than before - the same reasoning A14
+used to make geometric validation, not vision, the ground truth for CAD.
+There's no equivalent geometric ground truth for an arbitrary GUI click, so
+the confirmation prompt is what fills that role instead: it must state
+plainly that the target was vision-resolved and describe what the model
+believes it's about to click, so a
 misidentification can be caught before it fires, not after.
 """
 

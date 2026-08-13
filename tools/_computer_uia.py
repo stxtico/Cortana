@@ -19,6 +19,7 @@ apps with UIA providers all expose).
 import os
 from dataclasses import dataclass
 
+import psutil
 import pywinauto
 import win32api
 import win32con
@@ -150,6 +151,51 @@ def _name_matches(info_name: str, target: str) -> bool:
     return info_name == target.rsplit(".", 1)[0]
 
 
+def _find_top_level_hwnds(process_match: str) -> list[int]:
+    """Real top-level window enumeration by owning-process name, not
+    pywinauto's connect(path=process_match). Found live during A22's
+    grounding benchmark: connect(path="Code.exe") raises
+    ProcessNotFoundError outright - not "picks the wrong process," but
+    total failure - for any app that spawns multiple processes sharing one
+    executable name (VS Code, Chrome, Electron apps including cortana's own
+    control panel all do this: renderer/helper/GPU processes alongside the
+    one that actually owns a window). This was silently zeroing out UIA
+    coverage on exactly those apps, not because they lack real UIA
+    structure - direct enumeration this same way found 120 real elements in
+    VS Code and 61 in Chrome - but because resolve() could never even reach
+    them. explorer.exe and WindowsTerminal.exe (single real process each)
+    happened to work fine under the old connect(path=...) call, which is
+    why the bug wasn't obvious from casual testing on Explorer alone.
+
+    Returns every matching top-level window's hwnd (not just one) - a
+    process can legitimately own several real windows (multiple Explorer
+    folders, multiple Chrome/VS Code windows), and the caller needs to try
+    each rather than assume the first one found is the right one."""
+    hwnds = []
+
+    def _cb(hwnd, _):
+        if not win32gui.IsWindowVisible(hwnd):
+            return
+        if not win32gui.GetWindowText(hwnd):
+            return
+        if win32gui.GetClassName(hwnd) == "Progman":
+            return  # the desktop shell, also owned by explorer.exe - never a real app window
+        try:
+            _, pid = win32process.GetWindowThreadProcessId(hwnd)
+            proc_name = psutil.Process(pid).name()
+        except Exception:
+            return
+        if process_match.lower() not in proc_name.lower():
+            return
+        rect = win32gui.GetWindowRect(hwnd)
+        if rect[2] <= rect[0] or rect[3] <= rect[1]:
+            return
+        hwnds.append(hwnd)
+
+    win32gui.EnumWindows(_cb, None)
+    return hwnds
+
+
 def resolve(
     process_match: str,
     *,
@@ -167,16 +213,13 @@ def resolve(
     callers (computer.py) fall through to the next resolution tier on None,
     never on an exception from here (a resolution miss is an expected,
     ordinary outcome, not an error condition)."""
-    app = pywinauto.Application(backend="uia")
-    try:
-        app.connect(path=process_match)
-    except Exception:
+    for hwnd in _find_top_level_hwnds(process_match):
+        app = pywinauto.Application(backend="uia")
         try:
-            app.connect(title_re=f".*{process_match}.*")
+            app.connect(handle=hwnd)
         except Exception:
-            return None
-
-    for window in app.windows():
+            continue
+        window = app.window(handle=hwnd)
         try:
             candidates = _walk(window)
         except Exception:
