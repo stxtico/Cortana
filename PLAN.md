@@ -159,6 +159,50 @@ expansion — **benchmark your actual combination under realistic load before co
 a routing config**, and leave real headroom. Running out of unified memory mid-task is an
 ugly failure.
 
+### Model landscape — as of August 2026
+
+The plan originally named gpt-oss 120B and Qwen3-Coder 30B. Both are now a generation
+behind. Re-benchmark on arrival rather than trusting any of this — but this is the field
+to benchmark against.
+
+**Candidates for the Spark's `primary` tier:**
+
+| Model | Shape | Why it's here |
+|---|---|---|
+| **Nemotron 3 Super** | 120B total / 12B active, hybrid Mamba-MoE | NVIDIA's own hardware. ~4x throughput over Nemotron 2 Nano and **up to 60% fewer reasoning tokens** — that last number is the `think=true` cost measured in A8, addressed architecturally. Native speculative decoding via MTP heads. |
+| **Qwen3.6-35B-A3B** | 35B total / 3B active MoE | Explicitly built for agentic tool calling; the model card leads with it. Would leave far more headroom than a 120B. |
+| **Qwen3.6-27B dense** | 27B dense, ~17GB Q4 | SWE-bench 77.2, Terminal-Bench 59.3. Multimodal, 262K native context extensible to ~1M via YaRN. |
+| **gpt-oss 120B** | MoE | The original pick. Still viable; now has real competition. |
+
+**On Nemotron specifically:** the honest summary from reviewers is that it doesn't top raw
+capability charts — DeepSeek V4 and Qwen3.5/3.6 beat it on absolute benchmarks — but it
+wins on *inference efficiency on NVIDIA hardware*. On a Spark that's the axis that
+matters. Nemotron 3 Ultra (550B/55B-active, 1M context, OpenMDW-1.1 license with weights
+*and* training data released) is the ceiling, but it's multi-node territory, not a
+128GB box.
+
+**The agentic-coding gap is the number to weigh.** Qwen3.6-27B vs. Gemma 4 31B on agentic
+coding: **70.6 vs 41.6**. That's the largest gap in the whole comparison, and agentic
+coding is exactly what the CAD loop and the tool dispatcher do. Gemma leads on math (AIME
+89.2) and ties on multimodal grounding — so the split is real, not a wash.
+
+**Caveat worth holding:** independent testing (Kaitchup) found Qwen3.6 *worse* than
+Qwen3.5 on instruction-following (IFBench) and GPQA Diamond, and flagged unusually high
+CoDeC scores on AIME-style benchmarks — a possible sign of benchmark-adjacent training.
+Benchmark it on your own tasks, not on published numbers.
+
+### The current 12GB stack is still correct
+
+Nothing in this list runs on a 3080 Ti. Nemotron 3 Nano needs ~25GB at 4-bit; the 30B class
+sits at the VRAM limit of a *24GB* card with zero KV-cache headroom. `gemma4:e4b` at ~3.2GB
+resident is what makes six models coexist in 12GB.
+
+The one thing worth watching: **Gemma 4 12B** is repeatedly named the single-12GB
+multimodal pick (~8GB at Q4). That's more capable than e4b and might fit if the rest of the
+stack were trimmed — but it would cost most of the headroom that currently holds Whisper,
+XTTS, and embeddings simultaneously. Only worth testing if a specific capability gap shows
+up in use.
+
 ### Three-tier model registry
 
 Extend `config/cortana.toml` — this is the config that earns the box:
@@ -166,7 +210,7 @@ Extend `config/cortana.toml` — this is the config that earns the box:
 ```toml
 [models]
 fast    = "qwen3-4b"          # always resident, always cheap
-primary = "gpt-oss-120b-q4"   # daily driver, MoE, ~5B active params
+primary = "gpt-oss-120b-q4"   # daily driver, MoE — benchmark against nemotron-3-super before committing
 heavy   = "llama-4-maverick"  # ~95GB Q4, solo mode only
 alt     = "qwen3-coder-30b-ablit"   # secondary, read-only tools
 
@@ -198,6 +242,39 @@ tools = "readonly"
 
 Same switching mechanism as the alt model: explicit invocation, visible state on the
 character, auto-revert.
+
+### Model candidates for the primary tier (benchmark, don't pick on spec)
+
+The 120B-class slot has more than one credible occupant now. Test them head to head on the
+real workload — the agent loop, tool-call discipline, CAD generation — rather than choosing
+from a leaderboard.
+
+| Candidate | Shape | Why it's a contender |
+|---|---|---|
+| **gpt-oss 120B** | MoE, Q4 ~65GB | Production-reliable, well-supported quants |
+| **Nemotron 3 Super** | 120B total / 12B active MoE | Built for NVIDIA hardware efficiency specifically |
+| **GLM-5.2** | 744B MoE | Strongest open-weight on agentic benchmarks — too big for 128GB, listed as the ceiling to measure against via API |
+
+**Nemotron deserves a real look for two reasons beyond raw capability.**
+
+First, the architecture targets the exact problem this build hit. NVIDIA claims Nemotron 3
+Nano delivers up to 4x higher token throughput than its predecessor and **reduces
+reasoning-token generation by up to 60%**. That second number matters directly: A8 measured
+`think=true` costing 2-3x per call, with 2-3 calls per turn, and that cost is the thing
+blocking the agent loop from being wired into the voice path. A model that reasons in fewer
+tokens attacks that at the source.
+
+Second, NVIDIA publishes weights, training data, recipes, and evaluation resources — which
+makes the Track B LoRA work a documented path rather than a reverse-engineered one.
+
+The honest counterweight: Nemotron does not top raw capability charts, and reviewers place
+DeepSeek and Qwen ahead on absolute capability. Its claim is inference efficiency on NVIDIA
+hardware, which is precisely the axis a Spark optimizes for — but it means benchmarking on
+your own workload matters more here than usual.
+
+**Not viable on the 3080 Ti.** Nemotron 30B sits at the VRAM ceiling on *24GB* cards with
+zero headroom for KV cache. At 12GB, with Whisper, XTTS, and embeddings also resident, it
+isn't a candidate. This is a Track B evaluation, not a swap to make now.
 
 ### The trap
 
@@ -373,32 +450,9 @@ like you're waiting on a machine.
 
 **Goal:** one continuous conversation that never resets.
 
-**Built hand-rolled (`services/memory/`), not on Letta - decided during A6, worth recording
-so this isn't re-litigated later.** The architecture call below was right: OS-style tiered
-context (profile as always-present RAM, rolling summarization, retrieval as disk) is
-exactly the right spec, and it's what got built. Letta specifically, the library, turned
-out to be a worse fit than it looked on paper:
-
-- **A real, if fixable, dependency conflict.** `letta` (the full server) has no torch/
-  transformers/numpy conflict with this project's pins in isolation, but installed into
-  the same shared venv as the rest of cortana it silently downgrades `onnxruntime`
-  1.28.0->1.20.1 (openWakeWord's dependency - the hand-tuned wake-word calibration sits on
-  top of this), plus `protobuf` and `wrapt`. Fixable by running Letta in its own isolated
-  venv and talking to it over HTTP via the thin `letta-client` package (3 packages, zero
-  conflicts) - but that's already a second service to run and operate, not a library import.
-- **The real disqualifier: shape, not dependencies.** Letta's core design is MemGPT-style -
-  the agent manages its own memory by making its own LLM function-calls (deciding when to
-  write core/archival memory, etc.), not "compute an embedding and store it." Routed
-  through its chat loop, that means extra LLM round-trips per turn on the same shared
-  Ollama/GPU budget A5 spent an entire session fighting to keep under 2.3s. The three-layer
-  spec below doesn't need an autonomous memory agent - it's three deterministic steps,
-  which is also the shape every other integration in this project has taken (no LangChain
-  in A8, a hand-rolled pitch tracker over librosa in A3, etc.).
-- Confirmed fully-local is achievable either way: Letta's Ollama provider proxies both chat
-  and embeddings through Ollama's OpenAI-compatible endpoint, no cloud key required. The
-  hand-rolled version does the same thing directly - `nomic-embed-text` via Ollama
-  (measured ~572MB resident, comfortable headroom) for embeddings, sqlite-vec for storage,
-  `[models].primary` for summarization.
+Use **Letta** rather than building this. It implements OS-style tiered context — active
+context as RAM, external storage as disk, with the agent managing its own memory through
+function calls. That is exactly the spec, already written.
 
 Three layers, all required:
 
@@ -409,13 +463,7 @@ Three layers, all required:
 3. **Retrieval** — vector store of everything ever said; pull the top 5-10 relevant
    fragments each turn based on recent messages.
 
-Use the fast 4B model for summarization so it doesn't block the main loop. **Revised in
-A6**: no resident fast-tier model fit VRAM with real headroom (measured: embedding model
-alone leaves ~1956MB free, adding a resident fast chat model on top drops that to 585MB -
-too thin given this project's own prior finding that a similar margin regressed a later
-call to a multi-second reload). Summarization uses `[models].primary` instead, always as a
-background task fired after the turn's response has already been spoken - never inline,
-so it can never add latency to the response the user is waiting on.
+Use the fast 4B model for summarization so it doesn't block the main loop.
 
 **Build a memory inspector in this phase, not later.** A simple CLI or page that lists
 what it has stored about you and lets you delete or correct entries. Memory systems record
@@ -423,11 +471,7 @@ offhand remarks as permanent facts, and six months of uncorrected drift is very 
 untangle after the fact.
 
 **Done when:** you can reference something from a conversation two weeks earlier and it
-surfaces correctly, and you can open a file and see why. Verified in A6 across a real
-process restart (two separate process invocations, not just a fresh in-process object) -
-correct recall of facts stated in the first process, sourced purely from disk storage in
-the second, confirmed via `scripts/memory.py` showing exactly which session and entry it
-came from.
+surfaces correctly, and you can open a file and see why.
 
 ---
 
@@ -458,22 +502,6 @@ Hard rules:
 - Every tool call logged with arguments and result
 - Anything that deletes, sends, spends, or unlocks requires spoken confirmation
 - Never give an autonomous loop unrestricted shell on the host
-
-**Known cost, not yet paid: `[thinking].agent = true`.** Built and measured in A8 -
-`think=false` (the voice loop's default) was unreliable at the tool-selection step
-itself (2/5 correct tool-call chains on a real test: narrated intent instead of
-calling a tool, lost track mid-chain, once hallucinated a filename). `think=true`
-fixed it completely (5/5, re-confirmed 3/3 more) but costs ~2-3x per call
-(~1.2-3.5s vs ~0.8-1.7s), and a single turn makes 2-3 calls. Accepted without
-consequence in A8 because the agent loop runs standalone, off the voice path
-entirely. **The moment it's wired into `services/brain/loop.py`, that's 5-10s of
-added latency stacked on top of the ~2.3s first-audio-out number (A5)** - not a
-theoretical concern, a real regression to measure and address at that point, not
-before. Obvious mitigation to evaluate then, not built now: think only on the
-tool-selection calls (deciding which tool, if any) and drop back to `think=false`
-for the final response-generation call once tool results are in hand - the
-reliability gap A8 found was specifically in the selection step, not in
-synthesizing a final answer from data already in context.
 
 **Done when:** you can say "turn off the lights and tell me what's on my calendar
 tomorrow" and it does both in one turn.
@@ -586,6 +614,49 @@ reference object in frame.
 - **Geometric validation between iterations:** does it execute, is the solid watertight,
   does it match stated dimensions. Catch failures before spending a vision call.
 - Expose `export_step` and `export_stl` as tools.
+
+### The GUI question — FreeCAD's Python console
+
+The obvious instinct once computer use works is to have her drive a CAD GUI directly:
+click here, drag that face. Two things make that different from clicking a file, and both
+are structural rather than solvable with effort:
+
+**A 3D viewport has no accessibility tree.** A18 works because a file is a real UIA element
+with a name and a bounding box. A modeling canvas is a rendered surface — one element with
+nothing addressable inside it. Menus and dialogs *do* expose UIA, so opening a dialog and
+typing a dimension is genuinely possible; the modeling itself is not. That drops straight to
+the vision tier, which is the one measured to fabricate.
+
+**And a dragged face isn't verifiable.** The whole CAD loop works because CadQuery executes:
+watertight, wall thickness, dimensions, units. Geometry produced by an unverified drag has
+none of that. You'd get parts that are confidently, subtly wrong — the exact failure the
+tier ordering exists to prevent.
+
+**The path that gets both: FreeCAD's built-in Python console.**
+
+FreeCAD exposes a full Python API and an embedded console. She writes geometry as code —
+executable, checkable, the same pipeline that already works — and it renders live in the
+FreeCAD GUI where you can rotate it, inspect it, and edit by hand. She can also drive
+FreeCAD's *menus and dialogs* through UIA where those are the right tool, since those are
+real accessibility elements.
+
+That's genuinely both halves: GUI-visible and human-editable, with every operation still a
+line of code something can verify. It's also less work than teaching a model to mouse
+through a viewport, and it doesn't depend on the one tier known to invent details.
+
+Worth building after A18 as a small integration, not a phase:
+
+- A `freecad` tool that sends Python to the running instance's console
+- Reuse the existing geometric validation — it's the same solid, checked the same way
+- Export path unchanged: STEP/STL out the other side
+- Vision stays where it is: last resort, always confirmed
+
+**On learning CAD from video:** transcription doesn't transfer skill. A tutorial in the
+memory store is a document she can quote, not a capability she gained — the weights don't
+change without fine-tuning, and most tutorial content is visual anyway ("drag this over
+here"), so the transcript is the least informative part. What actually improves CAD output,
+in order: the verified parts library, the verification loop, then good *written* references.
+Video sits fourth, and a long way behind.
 
 ### Scope honestly
 
@@ -1132,6 +1203,14 @@ awaiting approval.
 | Character blocks your clicks | `setIgnoreMouseEvents` not set, or not re-enabled after interaction |
 | Character stranded off-screen | Not handling display hot-plug / resolution change events |
 | Clicks the wrong UI element | Using pixel coordinates instead of the accessibility tree |
+| Workers stack up and OOM | No concurrency cap — two or three, from config |
+| A worker escalates privileges | Gates applied at spawn instead of per-tool; workers must inherit the parent's limits |
+| She reads the screen wrong, confidently | Vision used where UIA would have been exact; attribute readings, don't assert them |
+| Grounding still unreliable after a model swap | The model was never the main lever — cross-validation, crop-retry, and set-of-mark are |
+| Precision viewport work fails silently | No verifier exists for it. Route through the app's scripting API instead |
+| Something breaks offline | A new dependency quietly needs the network — test with it pulled |
+| Tool reports success on a bad path | No existence check before acting — verify the input resolves, not just that the command ran |
+| CAD via GUI dragging | Viewport has no accessibility tree and the result isn't verifiable — use FreeCAD's Python console |
 | Camera pipeline pegs the GPU | Running the VLM per-frame instead of on state-change triggers |
 | Confidently wrong about your mood | Built on emotion inference — switch to attention/presence signals |
 | Ambient comments feel invasive | Budget too high; one per hour is the practical ceiling |
@@ -1175,13 +1254,183 @@ awaiting approval.
 | 8 — Character | A weekend of code; weeks of lead time on the art |
 | 9 — Computer use | Two weeks, and never really "done" |
 | 10 — Camera | 3-4 days for the pipeline; the tuning is ongoing |
+| 12 — Delegation | 3-4 days; the queue is the work, the workers already exist |
+| 13 — Grounding + screen awareness | A week; the grounder swap is a day, the scaffolding is the rest |
 | 11 — Hologram | A weekend, whenever. Don't buy hardware until Phase 8 is lived with. |
 
 Get Phase 1 working end-to-end and ugly before you touch anything else. One wake word,
 one question, one spoken answer.
 
 ---
+## Phase 12 — Delegation: subagents she manages (A21)
 
+**Goal:** she assigns work to specialized workers and keeps talking to you while they run.
+
+The motivating problem is concrete, not architectural taste: **the agent loop is
+single-threaded.** A render batch blocks it for minutes. Today that means she goes silent
+mid-task. Delegation is what makes her a manager rather than an executor.
+
+### The shape that fits what's already built
+
+**Workers are processes, not model instances.** The marketing pipeline is already a
+standalone CLI (`python -m services.marketing.pipeline --n 5`). "Spawn a worker" is running
+that with arguments and watching for completion — no new inference cost, no second model
+resident. Same for CAD batches and any future long job.
+
+**Specialization comes from the tool set, not a different model.** A marketing worker gets
+marketing tools; a CAD worker gets CAD tools. Same primary model underneath, scoped
+differently. On 12GB that's the only viable option, and on a Spark it's still cheaper and
+more reliable than juggling several resident specialists.
+
+**A task queue, shaped like `services/daemon/`.** She pushes work on, workers pull it off,
+status comes back as state she reads. That's the third instance of an established pattern
+(`playback_state`, `listening_state`, `walk_signal`), not a new mechanism.
+
+**She reports rather than polls.** "The batch is rendering, three of five done" comes from
+reading queue state during an ordinary conversational turn — no background chatter, and it
+routes through Phase 4's relevance filter if she volunteers it unprompted.
+
+### Rails
+
+- **Worker output is data, not instruction.** A worker reporting "task failed, retry with
+  X" is a status record she reads, never a command that executes. Same instruction-source
+  boundary that applies to fetched web pages.
+- **Every worker inherits the same gates.** A delegated task can't reach a tool the parent
+  couldn't — confirmation, allowlists, and the kill switch apply to workers identically.
+  Delegation is not an escalation path.
+- **Hard concurrency cap.** Two or three workers, from config. Unbounded spawning on a
+  12GB box is how you discover the VRAM ceiling the hard way.
+- **The kill switch stops everything**, not just the foreground task. Test that explicitly —
+  it's a different code path from the single-task cancel already verified.
+
+**Done when:** you ask for a batch, she starts it, you have a normal conversation while it
+runs, and she tells you when it's finished.
+
+---
+
+## Phase 13 — Grounding and screen awareness (A22)
+
+**Goal:** vision that's reliable enough to act on, and a read-only path for answering
+questions about the screen.
+
+### A correction worth recording
+
+Earlier sections of this plan treated "vision fabricates" as a flat property of vision.
+That was too broad, and the distinction matters:
+
+**General-purpose VLMs are bad at GUI grounding. Purpose-built grounding models are a
+different class of thing.** On ScreenSpot-Pro — expert-level targets in Photoshop, AutoCAD,
+VSCode, Blender — GPT-4o scores 0.8%. A 7B specialist scores ~50%, beating a 72B generalist
+at a tenth the size. The two measured failures in this project (a wrong hole count on a CAD
+render, Explorer described as a VS Code sidebar) came from `gemma3:12b`, a generalist doing
+a task it was never trained for.
+
+**The ceiling is still real.** ~50% at 7B, ~63% at 32B on hard professional UIs; open agents
+complete roughly half of real Windows tasks end to end. A specialist is a much stronger
+*tier*, not a blind actuator. Everything the tier ordering exists for still applies.
+
+### What actually produces reliability
+
+Not a model — **scaffolding**. Three things, in descending order of measured value:
+
+| Change | Evidence |
+|---|---|
+| **UIA + vision cross-validation** | Windows Agent Arena: adding UIA markers alongside pixel detection boosted performance **52-57%**. Microsoft's UFO2 converged on the same hybrid design independently. |
+| **Crop-and-retry on low confidence** | Took one model from 18.9% to 40.2% on ScreenSpot-Pro — a larger gain than most model upgrades. |
+| **Set-of-mark prompting** | Overlay numbered boxes from the UIA tree; the model picks a number instead of emitting coordinates. Removes coordinate hallucination as a failure mode outright. |
+
+Plus **post-action verification** — confirm the expected state change after acting, retry on
+mismatch. Both of this project's measured fabrications would have been caught by it.
+
+### Model candidates that fit 12GB
+
+- **GTA1-7B** (Salesforce) — best accuracy-per-parameter open grounder. License caution:
+  dataset is CC-BY-NC-SA, code repo has no license file.
+- **Holo2-4B / 8B** (H Company) — Apache-2.0, Qwen3-VL-based, purpose-built for computer
+  use, architecture separates policy/localizer/validator.
+- **OmniParser V2** (Microsoft) — a *parser*, not a grounder; emits structured elements and
+  set-of-marks for any LLM. Note the icon_detect weights are AGPL.
+
+Spark tier: GTA1-32B, Holo1.5-72B. Same architecture, better accuracy — the hardware buys
+accuracy, not a design change.
+
+**Benchmark on your own screens before switching anything.** A score on someone else's
+screenshots isn't evidence about yours.
+
+### Screen awareness (the read path)
+
+Same discipline: **prefer the accessibility tree for anything structured** — titles, control
+names, visible text are exact via UIA, and asking a VLM to read them is strictly worse.
+Vision handles what UIA can't express: layout, images, "what does this look like."
+
+Attribute rather than assert. Privacy rails: frames in memory only, a config exclusion list
+for windows never captured, capture on trigger rather than continuously.
+
+---
+
+## The precision-work limit — and the answer to it
+
+**No open-source system today can reliably do precision viewport work from vision.** Dragging
+Live2D deformation-mesh vertices, or CAD faces in a 3D viewport, is out of reach. The reasons
+are structural, not tuning:
+
+- Sub-pixel-sensitive continuous drags, not discrete clicks
+- No accessibility tree inside a GL viewport, so vision is the *only* tier
+- Small-target accuracy collapses — icon-only targets score under ~5% on ScreenSpot-Pro, and
+  a mesh vertex is the worst case
+- **No verifier.** CAD at least has watertightness checks. "Does this deformation look right"
+  has no ground truth but your eyes
+
+**The answer is to represent the work as code**, which is the same conclusion the FreeCAD
+section reaches independently:
+
+| Domain | Route |
+|---|---|
+| CAD | FreeCAD Python API — generate, execute, verify geometrically |
+| 3D | Blender Python API — modeling as code generation |
+| Live2D | Cubism SDK for parameters, expressions, physics — **not** mesh authoring, which stays editor-bound |
+
+**Vision verifies the result; it never performs the precision action.** That rule generalizes:
+wherever the target app has a scripting API, route through the API.
+
+For character rigging specifically: the structured 80% — parameters, expressions, physics
+config — is genuinely automatable. The deformation mesh is the 20% that needs an eye, and
+that stays a human or a commission.
+
+---
+
+## Offline-first — the standing constraint
+
+Everything above and everything already built runs locally by design. Worth stating
+explicitly so it survives future decisions:
+
+| Capability | Local? | Notes |
+|---|---|---|
+| Speech in / out | Yes | Whisper + XTTS, both local weights |
+| Reasoning | Yes | Ollama, local model |
+| Memory | Yes | SQLite + sqlite-vec, local embeddings |
+| CAD generation | Yes | CadQuery executes locally; verification is geometric, not a service |
+| Video rendering | Yes | Remotion is headless Chromium + local encode |
+| Computer use | Yes | Windows UIA, entirely local |
+| Web search | **No** | Requires a search backend — see below |
+| Publishing | **No** | Posting to a platform is inherently networked |
+
+**Only two things need the internet, and both are exactly the tasks where that's inherent.**
+Nothing else should ever acquire a network dependency — if a proposed addition would make
+CAD or rendering or memory require connectivity, that's a reason to reject it, not a
+tradeoff to weigh.
+
+**Search is the one worth fixing.** Tavily is an API — it's the single hosted dependency in
+the build. **SearXNG** self-hosted replaces it: metasearch across public engines, nothing
+leaving the machine except the searches themselves, no account, no key. It needs a
+container runtime, which is why it was deferred, and it stays the right answer whenever
+that's resolved. The backend is already config-driven, so switching is one line.
+
+**Guard against silent regressions.** A dependency that quietly requires connectivity is
+easy to add and hard to notice. Worth a periodic check: pull the network, run a CAD
+generation and a render batch, confirm both complete.
+
+---
 ## Later — physical hologram (Phase 11, optional)
 
 Not a phase to build toward. Park it until Phase 8 is done and lived with.

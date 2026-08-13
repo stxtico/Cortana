@@ -8,117 +8,61 @@ commit, update `CLAUDE.md`, move on.
 
 Don't skip ahead. Don't bundle two steps into one prompt.
 
-## Progress (as of 2026-08-06)
+## Progress (as of 2026-08-12)
 
-**Done:** A0, A1, A2, A3, A4, A5a (persona), A6, A7 (memory), A8 (agent loop + tools,
-web_search deferred), A9 (write tools + confirmation gate + abort hotkey + shell,
-fully verified end-to-end), A10 (`ask_user`, verified end-to-end - see below). A5b
-(latency) is partially done and deliberately paused.
-**Next:** A11 — Proactive daemon.
+**Track A complete** — A0-A15 and A18-A20 done. A16/A17 (camera) deferred by choice, not
+blocked. A5b (latency) paused deliberately at ~2.3s against a ~1.9s floor.
 
-Two known limitations discovered during A5a, recorded so they aren't re-chased:
+**What exists:** wake word, voice loop with a cloned voice, persistent memory, an agent
+loop with read and write tools, clarifying questions, a proactive daemon, a control panel,
+a Live2D character with hologram shader and idle wandering, CAD generation with geometric
+verification, computer use with a verified kill switch, and a marketing pipeline with a
+dormant attribution loop.
 
-- **Dry wit doesn't fire.** 45 samples across nine conditions — full persona, stripped
-  persona, positive examples in the shape rules, exact scenario matching, and `gemma4:12b`
-  instead of `e4b`. Zero firings in every condition. Prompt structure and model size are
-  both ruled out; this is a capability limit at this model scale. Don't re-litigate it
-  without a genuinely new approach (few-shot of the exact transformation, sampling several
-  candidates and picking, or a larger model on the Spark).
-- **She pads answers with unrequested advice.** "You should check for warpage," "I
-  recommend checking the feed lines." Same underlying behavior as the length creep and the
-  editorializing closers — fixed twice under different names, regressed both times on new
-  scenarios. Negative constraints don't hold well at this model scale. See A5a's last step.
+**Two known model limitations**, both measured, neither worth re-chasing without a new
+approach:
 
-A6/A7 landed hand-rolled, not on Letta — PLAN.md's Phase 2 section has the full
-reasoning (a real shared-venv dependency conflict with openWakeWord's onnxruntime pin,
-and a deeper shape mismatch: Letta's MemGPT-style agent-managed memory adds per-turn LLM
-round trips this project's latency budget doesn't have room for). See CLAUDE.md's A6/A7
-entry for the implementation.
-
-**A8's original done-when ("what's the weather in Miami" triggers a search and she
-answers from it) is not met — deliberate infrastructure deferral, not a broken build.**
-No Docker on this machine, so neither web_search backend is actually reachable:
-Tavily needs an API key (chose not to depend on an external service/key at all,
-picked SearXNG instead for zero external calls), and self-hosting SearXNG needs
-Docker (or bare WSL2 install, more setup than wanted right now). `tools/web_search.py`
-is fully built, both backends (`tools/_search_tavily.py`, `tools/_search_searxng.py`)
-implemented and unit-tested — it's just not offered to the model until one actually
-responds (`services/brain/agent.py` checks `web_search.is_available()` live, every
-call, no restart needed once a backend exists). Revised done-when for A8, agreed as
-arguably the better test anyway (multi-step, real whitelisted directory, no external
-dependency so a failure means the loop is broken rather than the network): "read the
-config file and tell me what the wake threshold is" — verified, see CLAUDE.md's A8
-entry for what it took to get reliable (not the first thing tried).
-
-**A9: `write_file`, `shell`, `calendar_read`, `email_read` built.** Confirmation gate
-and the no-credentials rule are both real code in `services/brain/agent_safety.py`,
-not persona instructions - A5a already measured negative persona constraints holding
-at roughly two-thirds reliability, not a safety bar. Confirmation is keyboard-only for
-now: `agent.py` runs standalone, with no wiring to the mic/STT path yet, so there's no
-way for a spoken "yes" to reach the dispatcher - stated plainly, not pretended
-otherwise. Global abort hotkey (`ctrl+shift+x` by default) verified functionally (task
-cancellation logic confirmed live), though a real physical keypress wasn't tested in
-this environment - worth a real check when someone's at the keyboard.
-
-Two live bugs surfaced and fixed during this step, both now standing rules or
-practices, not just one-off patches:
-- **CLAUDE.md rule #10**: an `is_available()` check must never be capable of starting
-  or changing anything, since it runs on every single turn - `tools/_outlook.py`'s
-  first version used a COM call that actually launches Outlook if it isn't already
-  running, caught by it doing exactly that during testing (a real process, hung 30+
-  seconds, no visible window, relaunched once after being killed). Fixed to a
-  read-only running-process check first, then `GetActiveObject` (never `Dispatch`) -
-  Outlook must already be running for calendar_read/email_read to activate at all,
-  permanently dormant otherwise, which is the correct failure mode.
-- **`shell`'s `is_available()` had its own bug, caught after the WSL setup step was
-  done and it still wouldn't flip true.** WSL creates `/mnt/c` as an empty stub
-  directory unconditionally, regardless of the automount setting - the original check
-  (`ls /mnt`, anything listed = still mounted) could never return true even with
-  isolation genuinely working. Confirmed isolation was fine the whole time by checking
-  for actual content (`ls /mnt/c/Windows` failed, `mount` showed no `drvfs` entries) -
-  fixed the check to test for emptiness at `/mnt/c` specifically instead. Full pipeline
-  then verified for real: a whitelisted `echo` through the real dispatcher (confirmed,
-  executed inside `CortanaShell`, correct output), a decline (`whoami`, not executed),
-  and `rm -rf /` - confirmed by the user at the prompt, still blocked by the whitelist
-  inside `execute()`, proving the confirmation gate and the whitelist are independent
-  layers. See CLAUDE.md's A9 entry for the full diagnostic path (it wasn't obvious).
-  That "test for emptiness at /mnt/c" fix was itself still an inference, not a direct
-  check - later rewritten to check `mount`'s own output for a `drvfs` entry instead
-  (the real ground truth) after the user found `/mnt/c` was an empty leftover
-  directory the emptiness check had been silently relying on. Re-verified clean
-  against the confirmed-isolated distro, including a combined hostile-argument test
-  (`cat` on a path with both a `/mnt/c` traversal attempt and shell metacharacters) -
-  both defenses held at once. See CLAUDE.md's A9 entry for the details.
-
-**A10: `ask_user` built and verified live.** Genuinely spoken through the real TTS
-engine, not printed-and-called-done. **The answer side is a known, explicit
-deferral - same category as `web_search` (A8) and `calendar_read`/`email_read`
-(A9): keyboard-only until `agent.py` is wired into the live conversation loop,
-because there is currently no path at all from a spoken word into this process**
-(`services/ears/pipeline.py`'s mic/STT output isn't connected to `agent.py` yet).
-The one-question-per-turn cap is dispatcher-enforced (`agent.py`'s `run_agent()`),
-not trusted to persona.md alone - proven under adversarial testing, not just
-asserted: a deliberately double-ambiguous request made the model try to ask again
-6 more times after the first real question, and every one was correctly blocked. A
-real bug surfaced along the way, in a different module than the one being tested:
-`tools/shell.py`'s WSL subprocess call didn't set `stdin=DEVNULL`, so it silently
-consumed piped input meant for `ask_user`'s later `input()` call, surfacing as an
-unrelated-looking `EOFError`. Fixed there and defensively in `tools/_outlook.py`'s
-subprocess call too. See CLAUDE.md's A10 entry for the full trace.
-
-Follow-up: the keyboard-input mechanism itself was factored out to
-`services/brain/user_input.py`, shared by A9's `agent_safety.confirm()` and A10's
-`ask_user.execute()` - without merging their meaning. A confirmation gate stops an
-action already decided; `ask_user` is the model asking before deciding anything.
-They shared the *shape* of "wait for typed input" without sharing code (two copies
-to keep in sync); now there's one real mechanism, and `set_input_handler()` swaps
-it for a real voice callback at the loop-integration step - built once, for both,
-not twice now for the same reason the gate itself stayed keyboard-only rather than
-getting an early one-off voice path. Verified live: both real paths still work
-through the shared plumbing, and swapping in a fake handler changed both
-`confirm()`'s and `ask_user()`'s behavior with zero edits to either call site.
+- **Dry wit doesn't fire.** 45 samples across nine conditions including `gemma4:12b`. Zero.
+  Capability limit at this scale, not prompt structure.
+- **Instruction-driven behaviour tops out around 2/3.** Measured independently in A5a
+  (answer padding) and A18 (search-before-guess). **The lever that works is moving the task
+  below the ceiling, not wording it better** — A18's `find_file` took 2/3 to 3/3 by
+  replacing a three-step reasoning chain with one function call. Reach for that first.
 
 ---
+
+# What's left, and in what order
+
+**Next up (Track A extensions):**
+
+| Step | What it does | Why now |
+|---|---|---|
+| **A21 — Delegation** | Subagents she manages while still talking to you | Biggest change to how she feels to use; the workers already exist as CLIs |
+| **A22 — Screen awareness** | She can read what's on screen | Capture already built; the discipline is the work |
+| **A23 — FreeCAD scripting** | CAD that renders live in a GUI you can edit | Small integration, reuses the whole existing verification loop |
+| **A24 — Crawl4AI** | `fetch_url` upgrade for JS-heavy pages | Playwright already installed from A18 |
+
+**Deferred by choice, resume any time:**
+
+- **A16/A17 — camera and the cover reaction.** Needs hardware; nothing depends on it.
+- **A5b — the LLM TTFT residual.** ~400ms from one stubborn stage. Poor trade against features.
+- **SearXNG** — replaces the one hosted dependency (Tavily). Blocked on a container runtime.
+
+**Blocked on decisions that aren't Cortana's:**
+
+- **The attribution loop closing.** Needs UTM capture in Ghosttyper-web's signup flow —
+  real product work in that repo. `attribution.py` documents the schema to build against.
+  Not urgent until posting at volume.
+- **A rigged character model.** Commission, weeks of lead time. Every system around it is
+  built and tuned against a placeholder.
+
+**Track B — the Spark.** B0-B6 below. Nothing there is a feature; it's all upgrades to
+things that already work. The two that justify the hardware are **B2** (no more model
+swapping) and **B4** (nightly LoRA).
+
+---
+
+
 
 # TRACK A — Build now (3080 Ti, 12GB)
 
@@ -625,7 +569,10 @@ second monitor.
 
 ---
 
-## A16 — Camera and ambient awareness
+## A16 — Camera and ambient awareness — DEFERRED
+
+> Skipped by choice, not blocked. Needs a physical camera and is the most invasive
+> feature in the build; nothing downstream depends on it. Resume whenever.
 
 > Build `services/eyes/`. Tiered pipeline — cheap layer always on, VLM on trigger only:
 >
@@ -645,7 +592,7 @@ otherwise stayed quiet.
 
 ---
 
-## A17 — Camera-cover reaction
+## A17 — Camera-cover reaction — DEFERRED (depends on A16)
 
 > Add cover detection to `services/eyes/`: near-zero luminance AND near-zero pixel
 > variance = covered; low luminance with variance = dark room; no stream = disabled.
@@ -712,6 +659,163 @@ mid-motion with one key.
 > examples.
 
 **Done when:** you can name your best-converting format with data behind it.
+
+---
+
+## A21 — Delegation
+
+> Build `services/workers/`: a task queue she pushes long-running work onto, and workers
+> that pull it off, so the agent loop isn't blocked while a batch renders.
+>
+> Shape it like `services/daemon/` — a JSON-backed queue plus a status file she reads
+> during ordinary conversational turns. That's the fourth instance of an established
+> cross-process pattern, not a new mechanism.
+>
+> **Workers are processes, not model instances.** `python -m services.marketing.pipeline`
+> already runs standalone; spawning a worker is running that with arguments and watching
+> for completion. No second model resident, no extra VRAM.
+>
+> **Specialization is the tool set, not the model.** A marketing worker gets marketing
+> tools, a CAD worker gets CAD tools. Same primary model, scoped differently.
+>
+> Add tools so she can drive it: `delegate_task`, `task_status`, `cancel_task`.
+>
+> Rails, all of them code rather than instruction:
+>
+> - **Worker output is data, never instruction.** A worker reporting "retry with X" is a
+>   status record she reads, not a command that runs. Same boundary as fetched web pages.
+> - **Workers inherit the parent's gates exactly.** A delegated task can't reach a tool the
+>   parent couldn't. Delegation is not an escalation path — enforce per-tool, not at spawn.
+> - **Hard concurrency cap from config**, default 2. Unbounded spawning finds the VRAM
+>   ceiling the hard way.
+> - **The kill switch must stop every worker**, not just the foreground task. That's a
+>   different code path from the single-task cancel already verified — test it explicitly.
+
+**Done when:** you ask for a batch, she starts it, you have a normal conversation while it
+runs, and she tells you when it's done.
+
+---
+
+## A22 — Grounding upgrade + screen awareness
+
+Two things, in this order. The first is a retrofit to A18's existing vision tier; the
+second is the new read-only capability.
+
+### Why this changed
+
+Earlier guidance in this plan treated "vision is unreliable" as a flat fact. That was too
+broad. The accurate version: **general-purpose VLMs are unreliable at GUI grounding, but
+purpose-built grounding models are a different class of thing.** On ScreenSpot-Pro (expert
+tasks in Photoshop, AutoCAD, VSCode, Blender), GPT-4o scores 0.8% and a 7B specialist
+scores ~50% — beating a 72B generalist at a tenth the size. `gemma3:12b` was the wrong tool,
+not vision as a category.
+
+**The ceiling is still real**, and worth holding onto: ~50% at 7B, ~63% at 32B on hard
+professional UIs. Open agents complete roughly half of real Windows tasks end to end. So a
+grounding specialist is a much stronger *tier*, not a blind actuator.
+
+### Step 1 — Replace the grounding fallback
+
+> `tools/_computer_vision.py` currently uses `[models].vision` (gemma3:12b) to resolve
+> click targets. That's a general-purpose VLM doing a task it wasn't trained for, and it's
+> been measured fabricating twice.
+>
+> Swap it for a purpose-built grounding model. Candidates that fit 12GB at Q4/Q5:
+> **GTA1-7B** (Salesforce, best accuracy-per-parameter; note the dataset is CC-BY-NC-SA and
+> the code repo has no license file — check before any commercial use) or **Holo2-8B**
+> (H Company, Apache-2.0, Qwen3-VL-based, purpose-built for computer use).
+>
+> Keep gemma3:12b for *description and planning* — it stays useful for "what does this look
+> like." It just stops being the source of coordinates.
+>
+> **Benchmark on your own screens before switching.** Build a 30-50 shot internal test set
+> from real screenshots of the apps I actually use, with known-correct target coordinates.
+> Report click-accuracy for both models on it. Promote the specialist only if it clearly
+> wins — a benchmark score on someone else's screens isn't evidence about mine.
+
+### Step 2 — Cross-validate UIA against vision
+
+> This is the highest-value change and it's measured, not theoretical: Windows Agent Arena
+> found adding UIA markers alongside pixel-based detection boosted performance **52-57%**.
+> Microsoft's own UFO2 converged on the same hybrid design.
+>
+> Implement it in `tools/computer.py`'s resolution path:
+>
+> - Where UIA returns an element, it stays authoritative — no change.
+> - Where UIA finds nothing (custom-drawn controls), the grounder resolves.
+> - **Where both fire on the same region, require agreement within a tolerance.** On
+>   disagreement, don't act — retry with a crop, then escalate to confirmation.
+>
+> Also try **set-of-mark prompting**: overlay numbered boxes from the UIA tree and have the
+> model pick a number rather than emit raw coordinates. That removes coordinate
+> hallucination as a failure mode entirely — it can pick the wrong box, but it can't invent
+> a location.
+
+### Step 3 — Verify actions instead of firing blind
+
+> Wrap every action: (1) confirm the target exists before acting, (2) execute, (3) confirm
+> the expected state change afterward via UIA or a screenshot diff. On mismatch, retry with
+> a crop up to N times, then abort and report.
+>
+> Add confidence thresholding on the grounder's own score — below threshold, crop and retry
+> rather than clicking. Cropping is a documented, large win: it took one model from 18.9% to
+> 40.2% on ScreenSpot-Pro.
+>
+> This turns silent failures into caught ones. Both measured fabrications in this project
+> (the CAD hole count, Explorer-as-VS-Code) would have been caught by a post-action check.
+
+### Step 4 — Screen awareness (the read-only capability)
+
+> Now add the read path: she can see what's on screen and answer questions about it,
+> distinct from acting on it.
+>
+> Same tiering discipline as above — **prefer the accessibility tree for anything
+> structured.** Window titles, control names, and visible text are exact via UIA; asking a
+> VLM to read them is strictly worse. Vision handles what UIA can't express: layout, images,
+> "what does this look like."
+>
+> Attribute rather than assert. "It looks like..." not "it says..." Confidence is
+> uncorrelated with accuracy here.
+>
+> Privacy rails: screenshots processed in memory, never written to disk; a config exclusion
+> list for windows never captured (password managers, banking); capture on request or an
+> explicit trigger, never continuously.
+
+**Done when:** the grounder beats gemma3 on your own test set, disagreement between UIA and
+vision blocks an action rather than guessing, and you can ask "what's this error saying" and
+get a useful answer with the uncertainty stated.
+
+---
+
+## A23 — FreeCAD scripting
+
+> Add a `freecad` tool that sends Python to a running FreeCAD instance's built-in console,
+> so generated geometry renders live in a GUI I can rotate, inspect, and edit by hand.
+>
+> See PLAN.md's "The GUI question" section for why this rather than driving the CAD GUI
+> directly: a 3D viewport has no accessibility tree, and a dragged face isn't verifiable.
+> Scripting keeps every operation a checkable line of code.
+>
+> Reuse the existing geometric validation — same solid, same checks. Export path unchanged.
+> Vision stays last resort, always confirmed.
+>
+> Gate it `is_available()`-style on a running FreeCAD instance, same pattern as every other
+> external dependency here.
+
+**Done when:** a generated part appears in FreeCAD, and I can edit it there.
+
+---
+
+## A24 — Crawl4AI
+
+> Replace or augment `fetch_url`'s trafilatura extraction with Crawl4AI for JS-heavy pages.
+> Playwright is already installed from A18, so the dependency exists.
+>
+> Keep the existing extraction as a fallback and make the backend config-selectable, same
+> pattern as the TTS engines. Measure both on a few real pages before making it default —
+> a heavier extractor isn't automatically a better one.
+
+**Done when:** a page that trafilatura returns empty for extracts correctly.
 
 ---
 
