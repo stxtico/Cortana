@@ -110,8 +110,11 @@ A8's tool-calling demands first, see Done below)
   user-owned gaps, never faked here). [docs/history/A20.md](docs/history/A20.md)
 - **A21** — Delegation (`services/workers/`): JSON-backed durable task queue, workers as real
   OS subprocesses (never a second resident model — same already-running Ollama server),
-  specialization is the tool set, not the model. Kill switch verified to terminate every
-  running worker via real OS PIDs (`tasklist`-confirmed), not just the foreground task.
+  specialization is the tool set, not the model. Live-verified: spawn is non-blocking and the
+  foreground agent loop stays responsive while a worker renders, the concurrency cap holds
+  under real contention, and the kill switch — after a real gap was found and fixed (see
+  below) — takes down a worker's entire OS process tree (confirmed against 24 real PIDs
+  including 8 live `chrome-headless-shell.exe`), not just the top-level PID.
   [docs/history/A21.md](docs/history/A21.md)
 
 **Next**: A16 - camera and ambient awareness, per PROMPTS.md's sequencing

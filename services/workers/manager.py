@@ -183,7 +183,12 @@ async def cancel(task_id: str) -> bool:
 
     process = _active.get(task_id)
     if process is not None and process.returncode is None:
-        process.terminate()
+        # Same real-process-tree kill as the global abort hotkey
+        # (agent_safety.terminate_process_tree) - a single-task cancel needs
+        # the identical guarantee, not a bare terminate() that only reaches
+        # the top-level PID and leaves any npx/node/chrome-headless-shell
+        # descendants orphaned (PROMPTS.md A21 live testing).
+        agent_safety.terminate_process_tree(process.pid)
         return True
 
     # Not running yet (still queued) - mark_cancel_requested above is

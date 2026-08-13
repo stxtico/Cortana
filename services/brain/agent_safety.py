@@ -25,6 +25,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psutil
+
 from services.brain import user_input
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -135,18 +137,57 @@ def unregister_worker_process(task_id: str) -> None:
     _worker_processes.pop(task_id, None)
 
 
+def terminate_process_tree(pid: int) -> None:
+    """Explicit, code-enforced recursive kill for a worker's real OS process
+    tree (PROMPTS.md A21) - services/workers/manager.py's cancel() and this
+    module's own _on_abort_hotkey() both call this instead of a bare
+    Process.terminate() on just the top-level PID.
+
+    Live testing found the marketing worker's render stage spawns a real,
+    deep descendant tree: npx -> node -> esbuild/remotion/ffmpeg ->
+    multiple chrome-headless-shell.exe instances (measured: 15 real OS
+    processes, 4 of them live chrome-headless-shell.exe, mid-render). A
+    single terminate() on the top-level PID happened to take the whole tree
+    down cleanly in two separate live tests (0 survivors within 3s each
+    time) - but that appears to be Windows Job Object inheritance from
+    whatever terminal launched cortana's own process, not a guarantee this
+    code makes on its own. Walking and terminating every descendant
+    explicitly via psutil is what makes "the kill switch stops workers"
+    code-enforced regardless of how cortana itself is launched (a bare
+    background service with no terminal job object wrapping it would not
+    get the same protection for free)."""
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    children = parent.children(recursive=True)
+    procs = [parent, *children]
+    for p in procs:
+        try:
+            p.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    _, alive = psutil.wait_procs(procs, timeout=3)
+    for p in alive:  # terminate() didn't land in time - force it
+        try:
+            p.kill()
+        except psutil.NoSuchProcess:
+            pass
+
+
 def _on_abort_hotkey() -> None:
     # Runs on the keyboard package's hook thread, not the event loop thread -
     # call_soon_threadsafe is the real cross-thread bridge (same pattern
     # services/ears/pipeline.py uses for sounddevice's mic callback) for
-    # cancelling an asyncio.Task specifically. Process.terminate() is a
-    # direct OS call (TerminateProcess on Windows via the stdlib subprocess
-    # layer) with no event-loop dependency at all, so it's safe to call
-    # straight from this hook thread the same way tools/_computer_uia.py's
-    # focus_window() already makes raw win32 calls from arbitrary threads -
-    # verified empirically (PROMPTS.md A21 test), not just assumed, since
-    # this codebase has been burned by exactly this kind of unverified
-    # cross-thread assumption before (A18's keyboard.send()/SetForegroundWindow
+    # cancelling an asyncio.Task specifically. terminate_process_tree() is
+    # direct OS calls (psutil wrapping TerminateProcess on Windows) with no
+    # event-loop dependency at all, so it's safe to call straight from this
+    # hook thread the same way tools/_computer_uia.py's focus_window()
+    # already makes raw win32 calls from arbitrary threads - verified
+    # empirically (PROMPTS.md A21 test, including a real deep process tree
+    # under active rendering), not just assumed, since this codebase has
+    # been burned by exactly this kind of unverified cross-thread
+    # assumption before (A18's keyboard.send()/SetForegroundWindow
     # surprises).
     #
     # Logs every detection unconditionally, including a press that arrives
@@ -163,7 +204,7 @@ def _on_abort_hotkey() -> None:
     terminated_workers = []
     for task_id, process in list(_worker_processes.items()):
         if process.returncode is None:  # still running
-            process.terminate()
+            terminate_process_tree(process.pid)
             terminated_workers.append(task_id)
 
     if cancelled_foreground or terminated_workers:
