@@ -674,3 +674,51 @@ name = "detector_panic"
 # creative rejected or an ad account flagged (explicit instruction) -
 # excluded from paid rotation entirely, kept for organic.
 paid_safe = false
+
+[workers]
+# PROMPTS.md A21 - delegation. Workers are processes, not model instances
+# (explicit instruction) - every worker is a real OS subprocess making calls
+# to the same already-running Ollama server, same "no second model load"
+# reasoning services/daemon/daemon.py's own docstring already established
+# for why that process can coexist with the conversation loop.
+store_dir = "workers_store"
+# Hard cap, config-driven, never left to the model to self-limit - same
+# dispatcher-enforced-not-persona-enforced discipline as every other hard
+# limit in this project (A9's confirmation gate, A10's ask_user cap).
+# Unbounded spawning finds the VRAM ceiling the hard way (explicit
+# instruction) - each worker is a real process making real inference calls,
+# and this machine's headroom is already thin (see CLAUDE.md's VRAM
+# investigation).
+max_concurrent = 2
+
+# Specialization is the tool set, not the model (explicit instruction) - two
+# kinds of worker:
+#   kind = "script": runs an existing standalone module as a subprocess
+#     with CLI args, e.g. `python -m services.marketing.pipeline --n 5`.
+#     Never touches services/brain/agent.py's tool dispatcher at all, so the
+#     "inherit the parent's gates" rail is trivially satisfied - there's
+#     nothing gated to reach.
+#   kind = "agent": runs services/brain/agent.py's real run_agent() loop,
+#     scoped to exactly the tools listed here (services/workers/
+#     worker_main.py), which means it goes through the exact same
+#     confirmation/credential/abort-hotkey gates as the foreground
+#     conversation - the same dispatcher code, not a second, weaker one.
+
+[workers.types.marketing]
+kind = "script"
+module = "services.marketing.pipeline"
+# params keys map straight to CLI flags: {"n": 5, "channel": "organic"} ->
+# ["--n", "5", "--channel", "organic"]. Keeping the mapping this literal
+# means pipeline.py never needed to change to become delegatable.
+param_flags = ["n", "channel"]
+
+[workers.types.cad]
+kind = "agent"
+# A real subset, not "everything" - cad_generate/export_step/export_stl for
+# the actual CAD work, read_file/list_dir/find_file so it can locate
+# existing parts to reference, write_file so a real confirmation-gated tool
+# sits inside this worker's scope too (worth having something real to test
+# the gate-inheritance rail against, not just tools that never ask).
+# Deliberately excludes shell/computer/web_search/calendar_read/email_read -
+# a CAD batch has no reason to reach any of those.
+tools = ["cad_generate", "export_step", "export_stl", "read_file", "list_dir", "find_file", "write_file"]

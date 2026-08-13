@@ -37,7 +37,7 @@ import tomllib
 from datetime import datetime, time as dtime, timezone
 from pathlib import Path
 
-from services.daemon import calendar_trigger, email_trigger, output, relevance, timers
+from services.daemon import calendar_trigger, email_trigger, output, relevance, timers, worker_trigger
 from services.voice import playback_state
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -46,7 +46,10 @@ LOG_PATH = ROOT / "logs" / "daemon.jsonl"
 
 # Every trigger source, timers first since it's the only one that's actually
 # live on this machine - order doesn't affect behavior, just log readability.
-_SOURCES = [timers, calendar_trigger, email_trigger]
+# worker_trigger (PROMPTS.md A21) is the mechanism behind "she tells you
+# when it's done" - a delegated task's completion becomes a candidate the
+# same way a fired timer already does.
+_SOURCES = [timers, worker_trigger, calendar_trigger, email_trigger]
 
 
 def _load_config() -> dict:

@@ -53,7 +53,9 @@ from tools import (
     ask_user,
     cad,
     calendar_read,
+    cancel_task,
     computer,
+    delegate_task,
     email_read,
     export_step,
     export_stl,
@@ -63,6 +65,7 @@ from tools import (
     read_file,
     set_timer,
     shell,
+    task_status,
     web_search,
     write_file,
 )
@@ -111,6 +114,9 @@ _ALL_TOOLS = {
     "export_step": export_step,
     "export_stl": export_stl,
     "computer": computer,
+    "delegate_task": delegate_task,
+    "task_status": task_status,
+    "cancel_task": cancel_task,
 }
 
 
@@ -223,15 +229,29 @@ async def _call_tool(name: str, arguments: dict, tools: dict, cap: int) -> str:
     return result
 
 
-async def run_agent(messages: list[dict], model: str | None = None) -> AsyncIterator[str]:
+async def run_agent(messages: list[dict], model: str | None = None, tool_names: list[str] | None = None) -> AsyncIterator[str]:
     """Runs the tool-use loop for one turn. `messages` should already include
     the system prompt + conversation history + the new user turn - same shape
     services/brain/loop.py builds via MemoryManager.build_messages(). Yields
     assistant text tokens as they arrive on the final (non-tool-call) response,
-    same streaming contract as services/brain/client.py.stream()."""
+    same streaming contract as services/brain/client.py.stream().
+
+    tool_names (PROMPTS.md A21): explicit scoping for a delegated worker,
+    bypassing _tools_for_model's by-model lookup entirely when given -
+    "specialization is the tool set, not the model" (a marketing worker and
+    a CAD worker both run the same [models].primary, just with a different
+    tool_names list). This is the ONLY thing that changes for a worker -
+    every gate downstream (_call_tool()'s credential scan, confirmation
+    gate, abort-hotkey registration) runs exactly as it does for the
+    foreground conversation, on the exact same code path, not a second one.
+    Still passed through _drop_unavailable_tools() same as any other tool
+    set."""
     config = _load_config()
     active_model = model or config["models"]["primary"]
-    tools = _tools_for_model(active_model, config)
+    if tool_names is not None:
+        tools = {name: _ALL_TOOLS[name] for name in tool_names if name in _ALL_TOOLS}
+    else:
+        tools = _tools_for_model(active_model, config)
     tools = await _drop_unavailable_tools(tools)
     specs = [t.spec() for t in tools.values()]
     cap = config.get("tools", {}).get("max_result_chars", 3000)

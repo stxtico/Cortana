@@ -16,6 +16,7 @@ memory_store/
 daemon_store/
 marketing_store/
 marketing_out/
+workers_store/
 ui/dist/
 
 # Synthetic, mechanically regenerable from cad/verified/ + scripts/cad_synth.py

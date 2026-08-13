@@ -66,13 +66,30 @@ def credential_violation(arguments: dict) -> str | None:
 async def confirm(description: str, timeout_s: float = 120.0) -> bool:
     """Blocks until the user answers (via user_input.get_answer(), currently
     CLI) or the timeout elapses - a confirmation that times out is treated as
-    declined, not as hung forever."""
+    declined, not as hung forever.
+
+    EOFError (PROMPTS.md A21): a worker subprocess (services/workers/
+    worker_main.py) is spawned with stdin=DEVNULL - deliberately, so it can
+    never accidentally consume input meant for a foreground ask_user/confirm
+    call, the exact class of bug A10 hit once already with tools/shell.py's
+    _run_wsl(). But that means input() on an unattended worker's stdin
+    raises EOFError immediately, not "waits and times out" - without this
+    catch, a REQUIRES_CONFIRMATION tool called from inside a worker would
+    crash run_agent()'s whole loop instead of just failing the one gate
+    closed. Treated identically to a timeout: declined, logged, no crash -
+    the gate still exists and still runs, it just can't be answered "yes"
+    from a process with no attached terminal, which is the correct, safe
+    default for anything a worker wasn't explicitly cleared to do."""
     print(f"\n[CONFIRMATION NEEDED]\n{description}")
     try:
         answer = await asyncio.wait_for(user_input.get_answer("Proceed? [y/N] "), timeout=timeout_s)
     except asyncio.TimeoutError:
         print("(no response within the timeout - treating as declined)")
         _log({"stage": "confirmation", "outcome": "timeout"})
+        return False
+    except EOFError:
+        print("(no stdin available to answer - treating as declined)")
+        _log({"stage": "confirmation", "outcome": "no_stdin"})
         return False
     decided = answer.strip().lower() in ("y", "yes")
     _log({"stage": "confirmation", "outcome": "confirmed" if decided else "declined"})
@@ -88,6 +105,16 @@ _current_task: "asyncio.Task | None" = None
 _current_loop: "asyncio.AbstractEventLoop | None" = None
 _hotkey_installed = False
 
+# PROMPTS.md A21 - delegated workers are real OS subprocesses, not asyncio
+# Tasks inside this process, so cancelling _current_task above (the
+# foreground tool call) never touches them - a genuinely different code
+# path from the single-task cancel A18 already verified. services/workers/
+# manager.py registers a live Process handle here the moment it spawns a
+# worker and unregisters it the moment that worker exits (success, failure,
+# or already-terminated), so this dict only ever holds workers that are
+# actually still running right now.
+_worker_processes: dict[str, "asyncio.subprocess.Process"] = {}
+
 
 def register_current_task(task: "asyncio.Task", loop: "asyncio.AbstractEventLoop") -> None:
     global _current_task, _current_loop
@@ -100,24 +127,50 @@ def clear_current_task() -> None:
     _current_task = None
 
 
+def register_worker_process(task_id: str, process: "asyncio.subprocess.Process") -> None:
+    _worker_processes[task_id] = process
+
+
+def unregister_worker_process(task_id: str) -> None:
+    _worker_processes.pop(task_id, None)
+
+
 def _on_abort_hotkey() -> None:
     # Runs on the keyboard package's hook thread, not the event loop thread -
     # call_soon_threadsafe is the real cross-thread bridge (same pattern
-    # services/ears/pipeline.py uses for sounddevice's mic callback).
+    # services/ears/pipeline.py uses for sounddevice's mic callback) for
+    # cancelling an asyncio.Task specifically. Process.terminate() is a
+    # direct OS call (TerminateProcess on Windows via the stdlib subprocess
+    # layer) with no event-loop dependency at all, so it's safe to call
+    # straight from this hook thread the same way tools/_computer_uia.py's
+    # focus_window() already makes raw win32 calls from arbitrary threads -
+    # verified empirically (PROMPTS.md A21 test), not just assumed, since
+    # this codebase has been burned by exactly this kind of unverified
+    # cross-thread assumption before (A18's keyboard.send()/SetForegroundWindow
+    # surprises).
     #
     # Logs every detection unconditionally, including a press that arrives
     # with nothing registered - previously silent. Without this, a genuine
     # hook failure (the press never reached this callback at all - nothing in
-    # logs/agent.jsonl) and a merely mistimed one (it fired, but
-    # _current_task was already None/done) looked identical from outside the
-    # process: both just read as "nothing happened." Only the first is a real
-    # bug worth chasing.
+    # logs/agent.jsonl) and a merely mistimed one (it fired, but nothing was
+    # registered) looked identical from outside the process. Only the first
+    # is a real bug worth chasing.
+    cancelled_foreground = False
     if _current_task is not None and _current_loop is not None and not _current_task.done():
         _current_loop.call_soon_threadsafe(_current_task.cancel)
-        print("\n[ABORT] hotkey pressed - cancelling the in-progress tool call.")
-        _log({"stage": "abort_hotkey", "outcome": "cancelled"})
+        cancelled_foreground = True
+
+    terminated_workers = []
+    for task_id, process in list(_worker_processes.items()):
+        if process.returncode is None:  # still running
+            process.terminate()
+            terminated_workers.append(task_id)
+
+    if cancelled_foreground or terminated_workers:
+        print(f"\n[ABORT] hotkey pressed - foreground cancelled: {cancelled_foreground}, workers terminated: {terminated_workers or 'none'}.")
+        _log({"stage": "abort_hotkey", "outcome": "cancelled", "foreground": cancelled_foreground, "workers_terminated": terminated_workers})
     else:
-        print("\n[ABORT] hotkey pressed - no task currently registered, nothing to cancel.")
+        print("\n[ABORT] hotkey pressed - nothing registered, nothing to cancel.")
         _log({"stage": "abort_hotkey", "outcome": "no_task_registered"})
 
 
