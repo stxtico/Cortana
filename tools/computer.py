@@ -54,13 +54,37 @@ foreground process is re-checked live immediately before every click/type -
 not cached from when the target was resolved, in case a different app
 grabbed focus in between.
 
-Typing is only permitted when the target was resolved via UI Automation,
-where CurrentIsPassword is a real, structural property to check - a
-deliberate, narrower scope than "detect passwords everywhere," same
-"constrain shape" reasoning applied to which resolution tiers even permit
-keystroke synthesis, not just what gets refused after the fact. A
-password-flagged field refuses unconditionally, no confirmation offered -
-the instruction was "never," not "confirm first."
+Typing is only permitted when the target was resolved via UI Automation
+(uia or uia_setofmark - see below), where CurrentIsPassword is a real,
+structural property to check - a deliberate, narrower scope than "detect
+passwords everywhere," same "constrain shape" reasoning applied to which
+resolution tiers even permit keystroke synthesis, not just what gets refused
+after the fact. A password-flagged field refuses unconditionally, no
+confirmation offered - the instruction was "never," not "confirm first."
+
+A22 Step 2 adds a fifth resolved_via value, uia_setofmark
+(tools/_computer_setofmark.py): reached only when UIA's exact-name lookup
+misses AND tools/_computer_uia.py's find_candidates() finds the miss was
+genuinely ambiguous (loose name matches exist), never run alongside a clean
+UIA hit - deliberately narrower than always cross-validating every action,
+since A22 Step 1's own overlap analysis found that added latency for no
+measured benefit (21 of 25 targets where both tiers fired were the grounder
+merely agreeing with an already-exact UIA answer). It draws numbered boxes
+over the real UIA rectangles of every candidate and asks a vision model to
+pick one - location is UIA-exact, only "which one" is a guess, which is why
+it still requires confirmation unconditionally, same as raw vision.
+
+A22 Step 3 adds post-action verification (tools/_computer_verify.py): a
+snapshot taken immediately before every click/type, compared against a
+fresh one after (a UIA re-query for uia/uia_setofmark targets, a screenshot
+diff of the click region otherwise). Every outcome is logged alongside the
+resolution tier that produced the target, specifically so a pattern of
+UIA-resolved actions failing their post-check would actually be visible
+later (a wrong UIA element still resolves and clicks with full confidence -
+nothing before this existed to catch that). Neither signal is a pass/fail
+oracle, and a mismatch never triggers an automatic retry - the verification
+detail is appended to what execute() returns so a human or the calling
+agent decides what to do next, not this module guessing.
 """
 
 import asyncio
@@ -72,7 +96,15 @@ from pathlib import Path
 
 from services.brain import agent_safety
 from services.character import walk_signal
-from tools import _computer_cli, _computer_input, _computer_playwright, _computer_uia, _computer_vision
+from tools import (
+    _computer_cli,
+    _computer_input,
+    _computer_playwright,
+    _computer_setofmark,
+    _computer_uia,
+    _computer_verify,
+    _computer_vision,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
@@ -174,12 +206,43 @@ def _matches_trigger(text: str, triggers: list[str]) -> bool:
 async def _resolve(app_cfg: dict, target: str) -> _Target | None:
     """Runs the resolution tiers in priority order, returns the first hit or
     None if every tier misses - a miss is an ordinary outcome (returned to
-    the model as "couldn't find it"), never an exception."""
+    the model as "couldn't find it"), never an exception.
+
+    Step 2 (A22) arbitration is deliberately narrow, not an always-run-both
+    design: it only fires when UIA's own exact-name lookup misses AND
+    find_candidates() finds the miss was genuinely ambiguous (one or more
+    loose name matches), never alongside a clean UIA hit. A22 Step 1's own
+    overlap analysis found cross-validating every action would have added
+    latency for no benefit - 25/33 benchmark targets had both UIA and the
+    grounder fire, and of those, 21 were the grounder merely agreeing with an
+    already-exact answer and the other 4 were the grounder being wrong."""
+    computer_cfg = _computer_config()
     process_match = app_cfg.get("match_process", "")
+    resolve_hwnd: int | None = None
+
     if process_match:
         uia_result = _computer_uia.resolve(process_match, name=target)
         if uia_result is not None:
             return _Target(uia_result.center_x, uia_result.center_y, uia_result.name, "uia", uia_result.is_password, uia_result.hwnd)
+
+        threshold = computer_cfg.get("fuzzy_match_threshold", 0.6)
+        candidates = _computer_uia.find_candidates(process_match, target, threshold=threshold)
+        if candidates:
+            resolve_hwnd = candidates[0].hwnd
+            description_model = _load_config().get("models", {}).get("vision", "")
+            if description_model:
+                som_result = await _computer_setofmark.resolve(description_model, target, candidates, hwnd=resolve_hwnd)
+                if som_result is not None:
+                    return _Target(som_result.center_x, som_result.center_y, som_result.name, "uia_setofmark", som_result.is_password, som_result.hwnd)
+        else:
+            # Genuinely nothing UIA can offer (not even a loose match) - a
+            # window handle is still useful below for cropping the vision
+            # grounder's screenshot, even though no UIA *element* was found
+            # (this is exactly cortana's own control panel case from A22
+            # Step 1: zero UIA elements, but the window itself is still a
+            # real, enumerable top-level window).
+            top_hwnds = _computer_uia.find_top_level_hwnds(process_match)
+            resolve_hwnd = top_hwnds[0] if top_hwnds else None
 
     playwright_cfg = app_cfg.get("playwright", {})
     if playwright_cfg:
@@ -190,9 +253,11 @@ async def _resolve(app_cfg: dict, target: str) -> _Target | None:
             if pw_result is not None:
                 return _Target(pw_result.center_x, pw_result.center_y, pw_result.name, "playwright")
 
-    vision_model = _load_config().get("models", {}).get("vision_grounding", "")
-    if vision_model:
-        vision_result = await _computer_vision.resolve(vision_model, target)
+    models_cfg = _load_config().get("models", {})
+    grounding_model = models_cfg.get("vision_grounding", "")
+    description_model = models_cfg.get("vision", "")
+    if grounding_model and description_model:
+        vision_result = await _computer_vision.resolve(grounding_model, description_model, target, hwnd=resolve_hwnd)
         if vision_result is not None:
             x, y, what_you_see = vision_result
             return _Target(x, y, what_you_see, "vision")
@@ -296,32 +361,47 @@ async def execute(app: str, action: str, path: str | None = None, target: str | 
         return f"Refused: {app} is not the foreground application right now ({foreground} is) - not clicking blind."
 
     if action == "type":
-        if resolved.resolved_via != "uia":
+        if resolved.resolved_via not in _computer_verify.UIA_TIERS:
             _log({"stage": "action", "app": app, "action": "type", "target": target, "resolved_via": resolved.resolved_via, "result": "refused_unverifiable"})
             return "Refused: typing is only supported for a target resolved through the accessibility tree, where a password field can actually be verified."
         if resolved.is_password:
             _log({"stage": "action", "app": app, "action": "type", "target": target, "resolved_via": resolved.resolved_via, "result": "refused_password"})
             return "Refused: that field is a password field. Never - type it yourself."
 
-    needs_confirm = resolved.resolved_via == "vision" or (text and _matches_trigger(text, confirm_triggers)) or _matches_trigger(resolved.name, confirm_triggers)
+    # Set-of-mark clicks are UIA-exact on location but a guess on *which*
+    # candidate was meant - same reasoning as vision, still requires
+    # confirmation unconditionally, not just on a trigger word.
+    needs_confirm = resolved.resolved_via in ("vision", "uia_setofmark") or (text and _matches_trigger(text, confirm_triggers)) or _matches_trigger(resolved.name, confirm_triggers)
     if needs_confirm:
         prompt = describe(app, action, path, target, text)
         if resolved.resolved_via == "vision":
             prompt += f"\n(Resolved via last-resort vision guessing, not the accessibility tree - it believes it's looking at: {resolved.name!r}. Double-check before approving.)"
+        elif resolved.resolved_via == "uia_setofmark":
+            prompt += f"\n(The accessibility tree had multiple loose matches for {target!r}; a vision model picked {resolved.name!r} as the best match among real candidates. Double-check before approving.)"
         if not await agent_safety.confirm(prompt):
             _log({"stage": "action", "app": app, "action": action, "target": target, "resolved_via": resolved.resolved_via, "result": "declined"})
             return "Declined by user - not executed."
 
+    verify_cfg = config.get("verify", {})
+    verify_radius = verify_cfg.get("diff_radius", 60)
+    verify_settle_s = verify_cfg.get("settle_delay_s", 0.4)
+    verify_diff_threshold = verify_cfg.get("diff_threshold", 8.0)
+    before_snapshot = _computer_verify.snapshot(resolved.resolved_via, app_cfg.get("match_process", ""), resolved.name, resolved.x, resolved.y, verify_radius)
+
     if action in ("click", "double_click"):
         await _perform_click(resolved.x, resolved.y, double=(action == "double_click"))
-        _log({"stage": "action", "app": app, "action": action, "target": target, "resolved_via": resolved.resolved_via, "resolved_name": resolved.name, "x": resolved.x, "y": resolved.y, "result": "ok"})
-        return f"{action.replace('_', ' ').title()}ed on {resolved.name!r} in {app} (resolved via {resolved.resolved_via})."
+        await asyncio.sleep(verify_settle_s)
+        verify_result = _computer_verify.compare(before_snapshot, app_cfg.get("match_process", ""), resolved.name, resolved.x, resolved.y, verify_radius, verify_diff_threshold)
+        _log({"stage": "action", "app": app, "action": action, "target": target, "resolved_via": resolved.resolved_via, "resolved_name": resolved.name, "x": resolved.x, "y": resolved.y, "result": "ok", "verify_tier": verify_result.tier, "verify_outcome": verify_result.outcome})
+        return f"{action.replace('_', ' ').title()}ed on {resolved.name!r} in {app} (resolved via {resolved.resolved_via}). Verification ({verify_result.tier}): {verify_result.detail}"
 
     if action == "type":
         await _perform_click(resolved.x, resolved.y, double=False)  # focus the field first, same performance layer
         for ch in text or "":
             await _computer_input.type_char(ch)
-        _log({"stage": "action", "app": app, "action": "type", "target": target, "resolved_via": resolved.resolved_via, "result": "ok"})
-        return f"Typed into {resolved.name!r} in {app}."
+        await asyncio.sleep(verify_settle_s)
+        verify_result = _computer_verify.compare(before_snapshot, app_cfg.get("match_process", ""), resolved.name, resolved.x, resolved.y, verify_radius, verify_diff_threshold)
+        _log({"stage": "action", "app": app, "action": "type", "target": target, "resolved_via": resolved.resolved_via, "result": "ok", "verify_tier": verify_result.tier, "verify_outcome": verify_result.outcome})
+        return f"Typed into {resolved.name!r} in {app}. Verification ({verify_result.tier}): {verify_result.detail}"
 
     return f"Error: unknown action {action!r}."

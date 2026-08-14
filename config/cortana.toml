@@ -404,6 +404,15 @@ hotkey  = "ctrl+shift+x"
 # tools/_computer_vision.py's docstring for why that's separate from this list.
 confirm_triggers = ["send", "delete", "submit", "buy", "purchase", "confirm order", "pay"]
 
+# PROMPTS.md A22 Step 2 - how loose a match tools/_computer_uia.py's
+# find_candidates() accepts when seeding set-of-mark candidates after an
+# exact-name UIA miss (difflib.SequenceMatcher ratio, 0-1). Deliberately
+# permissive (0.6, not e.g. 0.85) since this only builds a candidate list
+# the model picks among with real rectangles - a false positive here costs
+# nothing (an irrelevant box the model ignores), a false negative means a
+# real candidate never gets shown at all.
+fuzzy_match_threshold = 0.6
+
 # Per-application allowlist - she can drive exactly these apps, nothing else.
 # The `app` parameter's JSON-schema enum (tools/computer.py's spec()) is
 # built from this table's keys, so the model structurally cannot name an
@@ -416,6 +425,25 @@ confirm_triggers = ["send", "delete", "submit", "buy", "purchase", "confirm orde
 [tools.computer.apps.explorer]
 match_process = "explorer.exe"
 open_command  = ["explorer.exe", "{path}"]
+
+[tools.computer.verify]
+# PROMPTS.md A22 Step 3 - tools/_computer_verify.py. Real wait for the OS/app
+# to actually settle before re-snapshotting - clicking, then immediately
+# re-checking, would catch mid-transition UI states (a menu still animating
+# closed, a window still animating open) as false "changed" or false
+# "unchanged" signals depending on timing luck, not a real post-action state.
+settle_delay_s = 0.4
+# Radius (pixels) of the screenshot region diffed around the click point for
+# vision-resolved targets (no accessibility-tree entry to re-query instead).
+# Small on purpose - wide enough to catch a real visible change at the click
+# site, narrow enough that unrelated on-screen motion elsewhere (a clock,
+# an animation in another part of the window) doesn't get swept in.
+diff_radius = 60
+# Mean per-channel pixel difference (0-255) above which a screenshot-diffed
+# region counts as "changed" - not 0, since PNG re-encoding and minor
+# cursor/rendering noise between two real screenshots of an unchanged region
+# measures a small nonzero diff even when nothing actually happened.
+diff_threshold = 8.0
 
 [tools.shell]
 # PROMPTS.md A9 - runs a whitelisted command inside a DEDICATED, isolated WSL2

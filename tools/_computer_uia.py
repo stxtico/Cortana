@@ -16,7 +16,9 @@ older/weaker Win32 backend - UIA is what modern apps, browsers, and Win32
 apps with UIA providers all expose).
 """
 
+import difflib
 import os
+import re
 from dataclasses import dataclass
 
 import psutil
@@ -37,6 +39,15 @@ class ResolvedElement:
     is_password: bool
     process_name: str
     hwnd: int  # the top-level window's real handle - what focus_window() below actually foregrounds
+    # Real screen-absolute bounding rect (PROMPTS.md A22 Step 2) - center_x/
+    # center_y alone are enough to click, but tools/_computer_setofmark.py
+    # needs the actual box to draw an accurate numbered mark, not a guessed
+    # square around the center point. Defaulted (not required) so any other
+    # existing call site that only ever needed the center point still works.
+    left: int = 0
+    top: int = 0
+    right: int = 0
+    bottom: int = 0
 
 
 def focus_window(hwnd: int) -> bool:
@@ -151,7 +162,7 @@ def _name_matches(info_name: str, target: str) -> bool:
     return info_name == target.rsplit(".", 1)[0]
 
 
-def _find_top_level_hwnds(process_match: str) -> list[int]:
+def find_top_level_hwnds(process_match: str) -> list[int]:
     """Real top-level window enumeration by owning-process name, not
     pywinauto's connect(path=process_match). Found live during A22's
     grounding benchmark: connect(path="Code.exe") raises
@@ -213,7 +224,7 @@ def resolve(
     callers (computer.py) fall through to the next resolution tier on None,
     never on an exception from here (a resolution miss is an expected,
     ordinary outcome, not an error condition)."""
-    for hwnd in _find_top_level_hwnds(process_match):
+    for hwnd in find_top_level_hwnds(process_match):
         app = pywinauto.Application(backend="uia")
         try:
             app.connect(handle=hwnd)
@@ -247,5 +258,91 @@ def resolve(
                 is_password=_is_password(info),
                 hwnd=window.handle,
                 process_name=process_match,
+                left=rect.left,
+                top=rect.top,
+                right=rect.right,
+                bottom=rect.bottom,
             )
     return None
+
+
+def _fuzzy_matches(info_name: str, target: str, threshold: float = 0.6) -> bool:
+    """Loose match for candidate-gathering only (PROMPTS.md A22 Step 2) -
+    never used by resolve()'s own exact-name lookup, which stays exact on
+    purpose (a real identity lookup, not a guess). This is deliberately
+    permissive (recall over precision): it only seeds a candidate list for
+    set-of-mark disambiguation, where a false positive costs nothing (the
+    model doing the picking just ignores an irrelevant box) but a false
+    negative means a real candidate never gets shown at all. Compares the
+    element's real accessible name against every word and word-pair in the
+    target description via difflib - handles the realistic case a plain
+    substring check misses (target "the icon that copies the selection" vs
+    name "Copy": "copies" is not a substring of "copy", but
+    SequenceMatcher's ratio between "copy" and "copies" is high)."""
+    if not info_name:
+        return False
+    name_l = info_name.lower()
+    words = re.findall(r"[a-zA-Z']+", target.lower())
+    grams = words + [f"{a} {b}" for a, b in zip(words, words[1:])]
+    return any(difflib.SequenceMatcher(None, name_l, g).ratio() >= threshold for g in grams)
+
+
+def find_candidates(process_match: str, target: str, max_results: int = 12, threshold: float = 0.6) -> list[ResolvedElement]:
+    """Real ambiguity detection for PROMPTS.md A22 Step 2 - called only after
+    resolve()'s exact-name lookup has already missed. Returns every element
+    whose real accessible name loosely matches target (see _fuzzy_matches()),
+    deduplicated by (name, control_type, rect) and capped at max_results.
+
+    The caller (tools/computer.py) uses the length of this list to decide
+    what "ambiguous" means: zero candidates -> genuinely nothing UIA can
+    offer, fall through to the grounder as pure last resort, unchanged from
+    before this step. One or more candidates -> route to set-of-mark
+    (tools/_computer_setofmark.py) to pick among them, rather than either
+    guessing which one is right or re-running the raw pixel-coordinate
+    grounder redundantly - every candidate here already has a real, exact
+    UIA-sourced rectangle, so the model's job is picking an index, never
+    inventing a location."""
+    seen = set()
+    results = []
+    for hwnd in find_top_level_hwnds(process_match):
+        app = pywinauto.Application(backend="uia")
+        try:
+            app.connect(handle=hwnd)
+        except Exception:
+            continue
+        window = app.window(handle=hwnd)
+        try:
+            elements = _walk(window)
+        except Exception:
+            continue
+        for element in elements:
+            if len(results) >= max_results:
+                return results
+            info = element.element_info
+            if not _fuzzy_matches(info.name or "", target, threshold=threshold):
+                continue
+            try:
+                rect = info.rectangle
+            except Exception:
+                continue
+            if rect.right <= rect.left or rect.bottom <= rect.top:
+                continue
+            key = (info.name, info.control_type, rect.left, rect.top, rect.right, rect.bottom)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(ResolvedElement(
+                name=info.name or "",
+                control_type=info.control_type or "",
+                automation_id=info.automation_id or "",
+                center_x=(rect.left + rect.right) // 2,
+                center_y=(rect.top + rect.bottom) // 2,
+                is_password=_is_password(info),
+                hwnd=window.handle,
+                process_name=process_match,
+                left=rect.left,
+                top=rect.top,
+                right=rect.right,
+                bottom=rect.bottom,
+            ))
+    return results
