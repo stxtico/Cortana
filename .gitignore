@@ -19,6 +19,12 @@ marketing_out/
 workers_store/
 ui/dist/
 
+# PROMPTS.md A24 - tools/write_docx.py etc.'s real output (documents,
+# spreadsheets, presentations, PDFs the user actually asked for) - stays
+# out of git for the same reason marketing_out/ does: generated deliverable
+# content, not project source.
+deliverables/
+
 # Synthetic, mechanically regenerable from cad/verified/ + scripts/cad_synth.py
 # (PROMPTS.md A13) - unlike cad/verified/ itself (hand-authored scripts,
 # descriptions, and real failed-attempt history), this is derived output that

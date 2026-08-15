@@ -1209,6 +1209,8 @@ awaiting approval.
 | Grounding still unreliable after a model swap | The model was never the main lever — cross-validation, crop-retry, and set-of-mark are |
 | Precision viewport work fails silently | No verifier exists for it. Route through the app's scripting API instead |
 | Something breaks offline | A new dependency quietly needs the network — test with it pulled |
+| A wrong answer stated confidently | No external check existed. Check what can be checked; hedge what can't |
+| Re-checking doesn't help | A second pass over the same reasoning manufactures agreement. Check against reality instead |
 | Tool reports success on a bad path | No existence check before acting — verify the input resolves, not just that the command ran |
 | CAD via GUI dragging | Viewport has no accessibility tree and the result isn't verifiable — use FreeCAD's Python console |
 | Camera pipeline pegs the GPU | Running the VLM per-frame instead of on state-change triggers |
@@ -1396,6 +1398,138 @@ wherever the target app has a scripting API, route through the API.
 For character rigging specifically: the structured 80% — parameters, expressions, physics
 config — is genuinely automatable. The deformation mesh is the 20% that needs an eye, and
 that stays a human or a commission.
+
+---
+## Check what can be checked — a cross-cutting rule
+
+The instinct is "double-check everything." That doesn't work, and it's worth being precise
+about why: **a model re-reading its own answer usually just agrees with itself more
+confidently.** This project has measured that directly — `gemma3:12b` contradicted itself
+across two attempts on the *same image* in A14, so a second pass would have produced a
+second wrong answer, not a correction.
+
+**What actually caught errors here was verification against something external, every
+time:**
+
+| What was wrong | What caught it |
+|---|---|
+| Kill switch passing for the wrong reason | The real OS process list, not the status file |
+| `notify` silently doing nothing | A screenshot, not the clean return |
+| Grounding model choice | A benchmark on real screens, not published scores |
+| UIA baseline of 39.4% | Asking why a plausible number looked odd |
+| `media_keys` reporting a false round trip | Noticing the before and after were different apps |
+| "SearXNG needs Docker" (wrong, twice) | Nothing — it sat in the plan as a deferral |
+
+None were second passes. All were checks against reality.
+
+### The rule
+
+**Any claim that could be checked in one call, check it.** Not a second pass over the same
+reasoning — an external lookup:
+
+- A factual claim → one search
+- A file path → does it exist
+- A number → recompute it
+- A click → the post-action verification A22 already built
+- A tool result → the tool's own return value, not what she expected it to be
+
+One call. Cheap, specific, and it catches real errors instead of manufacturing agreement.
+
+### For everything that can't be checked
+
+Judgment calls, design opinions, "will this approach work" — there's no external check, so
+the answer isn't a second pass. It's **calibrated hedging**: say what's a claim and what's
+a belief.
+
+A22's screen tool already does this, and the pattern generalizes: *attribute rather than
+assert*. "It looks like" versus "it says." "I think X, worth confirming" versus "X."
+
+The SearXNG mistake is the example. It wasn't a missing check — it was stating something
+confidently that should have been flagged as worth confirming, which then propagated into
+the plan as a deferral and blocked a real capability for weeks.
+
+### Where this lives
+
+**In tool specs and dispatcher code, not in `persona.md`.** A5a measured persona
+instructions holding at roughly two-thirds. A rule that matters this much shouldn't sit at
+that reliability:
+
+- Tools that return a verifiable result should return the *verified* form, not the
+  expected one — A22's `verify_outcome` field is the template.
+- The research tool's separate contradiction field (A31) is the same idea: an empty field
+  is visibly empty, where an omitted caveat is invisible.
+- Where it must live in prose, make it a concrete enumerated condition rather than a
+  disposition — the thing that took `ask_user` from 0/4 to 4/4 in A10.
+
+## Breadth is the JARVIS property
+
+The thing that makes an assistant feel resourceful isn't a different kind of intelligence —
+it's having a hundred instruments and picking well. JARVIS doesn't reimplement
+spectroscopy; he drives the lab equipment, decides what to check, chains the steps, notices
+what's off, and reports in plain language.
+
+That's the same split that made every working part of this build work. CadQuery executes
+the geometry. Whisper does the transcription. `find_file` walks the directory. The
+intelligence is in the choosing and interpreting, not the reimplementing.
+
+**`TOOL_CATALOG.md` holds the full surface** — roughly 70 tools across eleven domains, with
+effort and risk per tool. The build waves are steps A23-A30 in `PROMPTS.md`.
+
+### The distinction worth keeping
+
+**Nothing should depend on a service you don't control.** That principle has held and it's
+why the build is offline-first. Search and publishing are the only network dependencies,
+and both are inherently networked.
+
+**Everything should be reimplemented in-house** is a different claim, and it costs you.
+ClamAV's value is a signature feed from millions of machines. Whisper's value is training
+you can't redo. Reimplementing those means a worse version that reports confidently and
+knows nothing — which is more dangerous than no scanner at all, because you'd believe it.
+
+Local and self-controlled: yes. Self-implemented: only where implementation is the hard
+part.
+
+### Workers vs. the daemon
+
+Both exist; they're for different shapes of work and it's easy to reach for the wrong one.
+
+| | Workers (A21) | Daemon (A11) |
+|---|---|---|
+| Trigger | You ask | Schedule or event |
+| Shape | Long, self-contained, async | Recurring, ambient |
+| Examples | Render a batch, generate a part | Memory consolidation, weekly scan, calendar alerts |
+
+Memory hygiene, security scans, and update checks are *daemon* jobs — building them as
+workers gives you something you have to remember to invoke, which defeats the point.
+
+**Worker specialization is the tool set, not the model.** Same primary model underneath,
+scoped differently. On 12GB that's the only viable option; on a Spark it's still cheaper
+and more predictable than several resident specialists.
+
+**Concurrency is capped at 2 on 12GB** and the reason isn't VRAM — Ollama serves one model,
+so concurrent workers queue against the same inference server *and* compete with the voice
+loop. Raising it gets you things waiting in line plus a laggy conversation. On a Spark,
+4-6 primary-tier workers plus 6-10 fast-tier background jobs is realistic, and the real win
+is a dedicated model instance for the voice loop so workers can never contend with it.
+
+---
+
+## Later — the phone client
+
+Talking to her from anywhere, with the Spark running 24/7. Not a feature; a real project
+with three parts:
+
+1. **Run as a service**, not a terminal process. Windows service or a systemd unit on the
+   Spark.
+2. **An authenticated API** in front of the brain. This is the part that needs designing
+   carefully — it's a network-reachable path to something that controls a computer.
+3. **A client.** A web app reached over Tailscale is far less work than a native app and
+   probably enough.
+
+**Worth naming the tradeoff:** this breaks the offline-only property. Your phone reaching
+your desktop means either an open port or a mesh VPN. Tailscale is the sane version —
+no port forwarding, device-level auth, traffic stays off the public internet. But it is a
+network dependency where there wasn't one.
 
 ---
 

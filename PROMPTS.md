@@ -37,10 +37,24 @@ approach:
 
 | Step | What it does | Why now |
 |---|---|---|
-| **A21 — Delegation** | Subagents she manages while still talking to you | Biggest change to how she feels to use; the workers already exist as CLIs |
-| **A22 — Screen awareness** | She can read what's on screen | Capture already built; the discipline is the work |
-| **A23 — FreeCAD scripting** | CAD that renders live in a GUI you can edit | Small integration, reuses the whole existing verification loop |
-| **A24 — Crawl4AI** | `fetch_url` upgrade for JS-heavy pages | Playwright already installed from A18 |
+| ~~A21 — Delegation~~ | Done | Workers, queue, kill switch verified |
+| **A22 — Grounding + screen awareness** | Steps 1-3 done; Step 4 remaining | Two verification gaps still open |
+| **A23 — Tool wave 1** | The system layer: notify, media keys, clipboard, search | Biggest feel change per unit of effort; mostly trivial |
+| **A24 — Tool wave 2** | Deliverables: docx, xlsx, pptx, pdf, OCR | Turns text into files |
+| **A25 — Default-allow computer use** | Every app, not one | The allowlist was scaffolding, not the safety layer |
+| **A26 — FreeCAD scripting** | CAD live in a GUI you can edit | Reuses the whole verification loop |
+| **A27 — Crawl4AI** | `fetch_url` upgrade for JS-heavy pages | Playwright already installed |
+
+**Then the careful ones** — each deserves its own session and its own gate design:
+
+| Step | What it does | Why it's separate |
+|---|---|---|
+| **A28 — Credential broker** | Vault to keystroke, never through her context | Touches secrets; design matters more than speed |
+| **A29 — Security suite** | ClamAV, YARA, connections, startup entries | Real local detection; she interprets, doesn't reimplement |
+| **A30 — Marketing to agent-kind** | Reasoning about output quality, not just producing it | A20's feedback loop already has the shape |
+
+`TOOL_CATALOG.md` has the full ~70-tool surface these are drawn from, with effort and risk
+per tool.
 
 **Deferred by choice, resume any time:**
 
@@ -787,7 +801,96 @@ get a useful answer with the uncertainty stated.
 
 ---
 
-## A23 — FreeCAD scripting
+## A23 — Tool wave 1: the system layer
+
+The single biggest change to how she feels to use, and almost all of it is trivial. See
+`TOOL_CATALOG.md` for the full surface this comes from.
+
+> Build these tools in `tools/`. Each is small; the value is in having all of them.
+>
+> - **`notify`** — Windows toast notification. Wire it into `services/daemon/` as an output
+>   path alongside the existing CLI print. A11 already built the triggers, relevance filter,
+>   and rate limiting — this is the missing output, not a new system.
+> - **`media_keys`** — send OS-level media keys (play/pause/next/previous). Works for
+>   Spotify, YouTube, VLC, anything, with zero per-app integration. Highest value-per-line
+>   tool in the catalog.
+> - **`clipboard_read` / `clipboard_write`** — read and set the clipboard.
+> - **`process_list`** — running processes with CPU and memory, via `psutil` (already a
+>   direct dependency since A21).
+> - **`window_list`** — enumerate open windows with titles and owning process. Reuse
+>   `_computer_uia.find_top_level_hwnds()`; the enumeration already exists.
+> - **`search_content`** — grep across files in the whitelisted directories. "Find the
+>   invoice with that number in it" currently has no answer.
+> - **`transcribe_media`** — point the already-resident Whisper at an audio or video file
+>   instead of the mic. Nearly free, unlocks "summarize this recording."
+> - **`capability_list`** — what she can currently do, what's dormant and why. "What can you
+>   do?" is the most natural question anyone asks an assistant and she can't answer it.
+>
+> Two design rules from A18's `find_file` lesson: **one call, not a chain** — prefer a tool
+> that does the whole job over one she has to sequence correctly, since multi-step reasoning
+> measures ~2/3 on this model. And **spec them concretely** — enumerated conditions and
+> examples, not descriptions of intent; that's what took `ask_user` from 0/4 to 4/4 in A10.
+
+**Done when:** she can notify you, pause your music, tell you what's running, find a file by
+its contents, and answer "what can you do?"
+
+---
+
+## A24 — Tool wave 2: deliverables
+
+Turns "here's some text you can copy" into "here's the file."
+
+> Build document generation in `tools/`:
+>
+> - **`write_docx`** (`python-docx`), **`write_xlsx`** (`openpyxl`), **`write_pptx`**
+>   (`python-pptx`), **`write_pdf`**
+> - **`pdf_read`** — extract text and tables
+> - **`ocr`** — image to text via Tesseract. Pairs with A22's screen capture: "what does
+>   this screenshot say" currently routes through a vision model that fabricates; OCR is
+>   exact.
+> - **`email_draft`** — compose and leave in drafts, never send. The safe default that
+>   covers most of the value.
+> - **`copy` / `move` / `rename` / `delete`** — ordinary file operations. `delete` goes to
+>   the recycle bin, never `unlink`.
+>
+> "Write an essay" needs no new tool — that's the model plus `write_file`. These are for
+> producing *formatted* output and editing what already exists.
+
+**Done when:** you ask for a report and get a Word document on your desktop.
+
+---
+
+## A25 — Default-allow computer use
+
+The allowlist was scaffolding for A18's first build, not the thing providing safety. The
+real protection is the confirmation gate on irreversible actions, the kill switch, the
+foreground re-check, and A22's post-action verification — all of which stay.
+
+> Invert `[tools.computer.apps]`: default-allow with a short **exclusion** list instead of
+> an allowlist. Exclusions are windows she never drives — password managers, banking, plus
+> whatever I name.
+>
+> The `app` parameter's enum currently comes from the allowlist table, so that structural
+> constraint disappears. Everything else stays exactly as built: confirmation on
+> send/delete/purchase/submit, the kill switch, the live foreground check before every
+> action, post-action verification, and no typing into password fields ever.
+>
+> Two things to add while you're there:
+>
+> 1. **Activate Playwright.** It's been dormant since A18, gated on finding a
+>    CDP-attachable Chrome. Document what launching Chrome with `--remote-debugging-port`
+>    actually exposes — an authenticated browser session reaches everything I'm logged into,
+>    which is the scope discussion we deferred rather than a technical blocker.
+> 2. **Watch the `resolved_via` and `verify_outcome` rates.** Going from one app to all apps
+>    means the vision tier fires far more often. If UIA resolution rate drops sharply on
+>    apps we've never tested, that's worth surfacing before it becomes a wrong click.
+
+**Done when:** she can drive any app on the machine, with the same gates that protected
+Explorer.
+
+---
+
+## A26 — FreeCAD scripting
 
 > Add a `freecad` tool that sends Python to a running FreeCAD instance's built-in console,
 > so generated geometry renders live in a GUI I can rotate, inspect, and edit by hand.
@@ -806,7 +909,7 @@ get a useful answer with the uncertainty stated.
 
 ---
 
-## A24 — Crawl4AI
+## A27 — Crawl4AI
 
 > Replace or augment `fetch_url`'s trafilatura extraction with Crawl4AI for JS-heavy pages.
 > Playwright is already installed from A18, so the dependency exists.
@@ -921,3 +1024,199 @@ numbers.
 > Add batch mode: queue several parts, run overnight, review in the morning.
 
 **Done when:** a part that failed on the 3080 Ti succeeds here.
+
+---
+
+## A28 — Credential broker
+
+The mechanism that makes "log me in" work without the secret entering her context.
+
+> Build `tools/login_to.py` plus a credential broker in `services/vault/`.
+>
+> **The flow:** she calls `login_to("chase")`. The broker retrieves the password from
+> Windows Credential Manager and hands it *directly* to `_computer_input.type_char()` — the
+> keystroke synthesis layer that already exists from A18. The password goes from vault to
+> keyboard buffer. It never appears in her context, in `logs/agent.jsonl`, or in the memory
+> store.
+>
+> She knows *that* she logged in. She never knows *what* the password was.
+>
+> **The learn-once flow:**
+>
+> 1. She hits a login with no stored credential for that site
+> 2. She asks — through `ask_user`, which already works
+> 3. I provide it via a prompt that writes straight to the vault, not through chat
+> 4. She logs in
+> 5. I confirm it worked
+> 6. Stored under that site's key, used automatically from then on
+>
+> **Why the vault rather than a file she reads:** `fetch_url` reads arbitrary web pages, and
+> pages can contain text addressed to the model — this project has seen instructions
+> embedded in tool output twice already. Credentials in context plus web reading is the one
+> combination worth engineering around, and this costs nothing in usability.
+>
+> Hard rules: the broker never returns a password to a caller, only types it. No tool ever
+> logs a credential value. A `list_credentials` tool returns site keys only, never secrets.
+
+**Done when:** I tell her a password once, and she logs me in from then on without either
+of us seeing it again.
+
+---
+
+## A29 — Security suite
+
+Real local detection she owns end to end — not a wrapper around someone else's verdict.
+
+> Build security tools in `tools/`:
+>
+> - **`scan_files`** — ClamAV against a path. Open source, fully local, real signature
+>   database on a schedule you control.
+> - **`update_signatures`** — refresh the ClamAV database
+> - **`scan_yara`** — custom YARA rules against files or process memory
+> - **`network_connections`** — active connections, listening ports, owning process
+>   (`psutil`)
+> - **`startup_entries`** — registry run keys, scheduled tasks, services
+> - **`verify_signature`** — Authenticode check on a binary
+> - **`firewall_status`** — rules and current state
+>
+> **The division of labour that makes this honest.** Signature matching is a data problem —
+> ClamAV's feed is the thing you couldn't reproduce. *Noticing that an unsigned binary in
+> AppData is listening on a high port and appeared in the startup entries yesterday* is a
+> reasoning problem, and that's hers. Running the scan and interpreting the result together
+> is the capability.
+>
+> **What she must not do: claim a system is clean.** "ClamAV found nothing and nothing in
+> the startup entries changed since last week" is a true statement. "You're not infected"
+> isn't one anything can make. Write that into the tool specs, not just the persona —
+> negative constraints in persona hold at ~2/3 on this model.
+>
+> Wire a weekly scan into `services/daemon/` as a scheduled job. Scheduled work belongs to
+> the daemon; delegated work belongs to workers.
+
+**Done when:** she runs a real scan, reports what she found in plain language, and flags
+something worth looking at without asserting it's malware.
+
+---
+
+## A30 — Marketing worker to agent-kind
+
+> A19's marketing pipeline is script-kind — it runs stages with no reasoning about whether
+> the output is any good. Convert it to agent-kind so it can judge.
+>
+> What that buys: comparing generated hooks against high-performing reference reels,
+> deciding a batch is weak and regenerating, noticing that a format has gone stale before
+> the attribution data says so. A20's feedback loop already has the shape — this is the
+> reasoning that was missing from it.
+>
+> Scope the tool list the way A21 scopes any agent worker: marketing tools plus
+> `fetch_url` and `transcribe_media` (for analysing reference videos), nothing else.
+>
+> Note the cost honestly: agent-kind means real inference per batch, competing with the
+> voice loop on 12GB. Measure whether batch time and conversational latency both stay
+> acceptable, and if they don't, that's a Spark-tier feature rather than a today one.
+
+**Done when:** a batch comes back with her having rejected and regenerated something,
+and told you why.
+
+---
+
+---
+
+## A31 — Self-hosted search, then real research
+
+Two steps. The first replaces the one hosted dependency in the build; the second is the
+capability that depends on it.
+
+### Why this order
+
+`web_search` is currently dormant with no backend, and Tavily — the original plan — needs
+an API key and an account. Everything below runs on APIs that need **neither**, so search
+stops being the one thing she can't do herself.
+
+**Correction to earlier guidance in this plan:** SearXNG was deferred as "blocked on a
+container runtime." That was wrong — it installs bare-metal, and this machine already has
+WSL2 from the wake-word training. The Docker requirement was never real.
+
+### Step 1 — a search backend that's actually hers
+
+> `web_search`'s backend is already config-driven from A8. Build the two keyless options
+> and pick by measurement, not by spec:
+>
+> **`ddgs`** (the maintained DuckDuckGo search library) — no key, no account, no
+> infrastructure. Install and it works. Start here.
+>
+> **SearXNG bare-metal in WSL2** — the fully self-hosted option: a metasearch instance
+> aggregating public engines, running on this machine, nothing leaving it but the queries
+> themselves. No container runtime needed; the WSL2 distro from the wake-word training
+> already exists. Give me the setup commands to run myself, same as the earlier Docker
+> instructions — including the `settings.yml` change that enables JSON output, since a
+> fresh install returns HTML only and the API call fails until `formats` includes `json`.
+>
+> Benchmark both on real queries I'd actually ask — a factual lookup, a current-events
+> question, a technical one — and report result quality, latency, and whether either gets
+> rate-limited under normal use. Then set the default.
+
+**Done when:** `web_search` works with no API key anywhere in the config.
+
+### Step 2 — the research worker
+
+The engineering-question shape: *"how do I power X and also have Y"* — decompose, research
+each part, find where they conflict, and bring the conflict back **already researched**.
+
+> Build `tools/research.py` plus a `research` worker type in `[workers]` — reading 25
+> papers is exactly the long asynchronous job A21's delegation exists for.
+>
+> **Source tools, all keyless, all direct API calls — hers, not a hosted service's:**
+>
+> | Source | Covers | Auth |
+> |---|---|---|
+> | **arXiv** | Preprints, full PDFs, strong on engineering and physics | None |
+> | **OpenAlex** | ~250M works, citation graph | None (email in User-Agent for the faster pool) |
+> | **Crossref** | DOI metadata, reference lists | None |
+> | **Semantic Scholar** | Citation counts, influence metrics | None at base rate |
+> | **PubMed** | Biomedical | None at base rate |
+>
+> Reuse `pdf_read` from A24 for full-text where it's openly available. Work from abstracts
+> and metadata otherwise — don't scrape paywalled full text.
+>
+> **What "reputable" has to mean concretely**, since it can't mean "she judged it good":
+> peer-reviewed or a preprint with real citations; citation count relative to field and
+> age; venue; recency weighted against how fast the field moves. Compute these from the
+> metadata the APIs already return — never ask the model to assess credibility from an
+> abstract.
+>
+> **The output structure is where the anti-yes-man property lives.** `persona.md` already
+> says she pushes back, and A5a measured persona instructions holding at ~2/3 — so make it
+> structural instead. The research tool returns **separate fields**:
+>
+> - What the sources support
+> - **What contradicts it** — populated with the strongest counter-evidence found, not
+>   omitted when the answer looks clean
+> - Where sources genuinely disagree, and how the disagreement splits
+> - What nobody has studied — the gap, stated plainly
+> - Confidence, derived from source count and agreement, not from tone
+>
+> A separate contradiction field she has to fill does more than any instruction, because an
+> empty one is visibly empty. If she found no counter-evidence, that's a finding worth
+> seeing, not a blank to skip past.
+>
+> **For multi-constraint engineering questions**, decompose first: sub-questions, research
+> each, then explicitly surface where the answers fight. "These two requirements conflict
+> — here are three approaches people have used, and here's the tradeoff each makes." That's
+> the difference between search and research.
+
+**Done when:** you ask a two-constraint engineering question and get back the conflict,
+the approaches, the tradeoffs, and the counter-evidence — without having to ask for the
+downside.
+
+### What not to build
+
+**Don't have her judge credibility from prose.** Citation counts, venue, and peer-review
+status are metadata the APIs return. Asking a model to assess whether a paper is
+trustworthy from its abstract is the same class of error as asking a general VLM for click
+coordinates — it will produce a confident answer with nothing behind it.
+
+**Don't let source count stand in for quality.** 25 papers that all cite one original study
+is one piece of evidence, not 25. Cluster by shared references and report that honestly —
+OpenAlex and Crossref both return reference lists, so this is computable rather than a
+judgment call.

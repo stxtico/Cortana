@@ -341,12 +341,15 @@ rolling_min_recent_messages = 4      # always left raw/uncompressed, even if fil
 # read_file/list_dir are scoped to exactly these directories (relative to the
 # project root, resolved + checked against path traversal in tools/_fs.py) -
 # add your own real working directories (CAD projects, etc.) here as needed.
-whitelist_dirs = ["config", "logs", "cad"]
+whitelist_dirs = ["config", "logs", "cad", "deliverables"]
 # PROMPTS.md A9 - write_file's whitelist, deliberately separate from the read
 # whitelist above (tools/_fs.py never assumes they're the same) and empty by
 # default: no directory is write-authorized until you explicitly add one here.
 # Read access to a directory doesn't imply write access to it.
-write_whitelist_dirs = []
+# PROMPTS.md A24 - "deliverables" added here first (explicit user choice over
+# writing straight to a real filesystem location like Desktop, until they've
+# seen what these tools actually produce): tools/write_docx.py etc.'s output.
+write_whitelist_dirs = ["deliverables"]
 # Cap on any single tool result folded back into the conversation. A fetched
 # page can be thousands of tokens; [models].context_window is 16384 and
 # persona.md alone already measures 3295 real tokens (see [memory]'s comment
