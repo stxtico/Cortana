@@ -266,6 +266,30 @@ def resolve(
     return None
 
 
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _strip_trailing_parens(name: str) -> str:
+    """Strips one or more trailing "(...)" groups - VS Code (and other apps)
+    routinely append a keybinding to nearly every actionable element's
+    accessible name ("Extensions (Ctrl+Shift+X)", "Toggle Panel (Ctrl+J)"),
+    which is pure noise for matching against a target *description* (nobody
+    describes a button by its keybinding) but real, unavoidable length that
+    drags down a whole-string SequenceMatcher ratio. Confirmed empirically,
+    not assumed: "extensions (ctrl+shift+x)" vs "extensions" measures 0.57,
+    under the 0.6 threshold, on a name that's an exact semantic match -
+    found via a live descriptive-target benchmark against real VS Code and
+    Chrome windows (A22 Step 2) where every one of 6 VS Code targets missed
+    for this exact reason, while Chrome (shorter names, no keybinding
+    suffixes) scored 5/6. Loops in case of multiple trailing groups
+    (uncommon, but cheap to handle rather than assume single)."""
+    while True:
+        stripped = _TRAILING_PAREN_RE.sub("", name)
+        if stripped == name:
+            return name
+        name = stripped
+
+
 def _fuzzy_matches(info_name: str, target: str, threshold: float = 0.6) -> bool:
     """Loose match for candidate-gathering only (PROMPTS.md A22 Step 2) -
     never used by resolve()'s own exact-name lookup, which stays exact on
@@ -274,14 +298,15 @@ def _fuzzy_matches(info_name: str, target: str, threshold: float = 0.6) -> bool:
     set-of-mark disambiguation, where a false positive costs nothing (the
     model doing the picking just ignores an irrelevant box) but a false
     negative means a real candidate never gets shown at all. Compares the
-    element's real accessible name against every word and word-pair in the
-    target description via difflib - handles the realistic case a plain
-    substring check misses (target "the icon that copies the selection" vs
-    name "Copy": "copies" is not a substring of "copy", but
-    SequenceMatcher's ratio between "copy" and "copies" is high)."""
+    element's real accessible name (keybinding suffix stripped - see
+    _strip_trailing_parens()) against every word and word-pair in the target
+    description via difflib - handles the realistic case a plain substring
+    check misses (target "the icon that copies the selection" vs name
+    "Copy": "copies" is not a substring of "copy", but SequenceMatcher's
+    ratio between "copy" and "copies" is high)."""
     if not info_name:
         return False
-    name_l = info_name.lower()
+    name_l = _strip_trailing_parens(info_name).lower()
     words = re.findall(r"[a-zA-Z']+", target.lower())
     grams = words + [f"{a} {b}" for a, b in zip(words, words[1:])]
     return any(difflib.SequenceMatcher(None, name_l, g).ratio() >= threshold for g in grams)
