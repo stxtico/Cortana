@@ -395,6 +395,13 @@ backend           = "searxng"
 max_results       = 5
 searxng_endpoint  = "http://localhost:8080"
 
+[tools.media_keys]
+# PROMPTS.md A23 - tools/media_keys.py. Real wait between sending the key
+# and re-querying the active media session's state - checking immediately
+# would catch an app mid-transition (before it's actually processed the
+# key) as a false "nothing changed" signal.
+settle_delay_s = 0.4
+
 [tools.confirm]
 # services/brain/agent_safety.py's confirmation gate (PROMPTS.md A9) - real
 # dispatcher code, not a persona instruction (CLAUDE.md rule 4; A5a's padding

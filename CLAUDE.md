@@ -171,11 +171,23 @@ A8's tool-calling demands first, see Done below)
   (`ToastEnabled = 0` — Windows notifications disabled system-wide on this machine, left for
   the user to flip, not this session's call). `notify` and the daemon's new toast path both
   now report/fall back to the honest state instead of silently succeeding or dropping the
-  message. `media_keys` verification pivoted from screenshots (Spotify's own UI turned out
-  chrome-less, no persistent transport bar to diff, plus a separate real `ImageGrab` bug
-  with negative-origin window rects on this dual-monitor layout) to the actually-correct
-  signal — Windows' own System Media Transport Controls API — confirming a real
-  `Playing` → `Paused` → `Playing` round trip. `transcribe_media` added
+  message. `media_keys`'s first verification pass was itself wrong, and it mattered: pivoted
+  from screenshots (Spotify's own UI turned out chrome-less, no persistent transport bar to
+  diff, plus a separate real `ImageGrab` bug with negative-origin window rects on this
+  dual-monitor layout) to Windows' own System Media Transport Controls API, but the test only
+  compared *a* session's `PlaybackStatus` before/after, never its *identity* — a reported
+  clean `Playing → Paused → Playing` round trip was actually two different apps: the pause
+  hit a real YouTube tab, the "restore" key (sent without re-checking who was current) hit
+  Spotify instead, caught only by the user noticing the actual audio. Fixed properly:
+  `tools/_smtc.py` (new) exposes `all_sessions()`, and `media_keys.execute()` now re-checks
+  the *specific* app that was active before the key, not just whichever session is "current"
+  afterward — current can reassign to an untouched app the instant the one actually just
+  affected stops being most recently active, confirmed live (a correctly-paused YouTube tab
+  briefly looked like a "wrong app" false negative under the naive check). An `app` parameter
+  that focuses a target window first was considered and rejected — SMTC routing tracks
+  playback activity, not window focus, so it wouldn't have worked and would have been a false
+  promise. The result now reports which app it confirmed changed, or honest uncertainty when
+  it can't confirm — never a guess. `transcribe_media` added
   `Transcriber.transcribe_file()` to `services/ears/stt.py` and live-transcribed a real voice
   reference recording accurately. `capability_list` reports three states (available/
   gated-behind-confirmation/dormant-with-a-reason) sourced from the live 28-tool registry and
