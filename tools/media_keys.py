@@ -21,25 +21,34 @@ A real, inherent limitation, surfaced rather than hidden or worked around:
 Windows routes a media key to whichever app it currently considers the
 "active" media session (tools/_smtc.py - the System Media Transport
 Controls API), a heuristic based on recent activity, not something any
-caller - this tool included - can choose or force. Caught live, the hard
-way: a first verification pass paused a YouTube tab, then a second call
-meant to un-pause it instead resumed Spotify, because the "active" session
-had shifted between the two calls. Considered and rejected: an `app`
-parameter that focuses a target window first, on the theory that focus
-would redirect the key - it wouldn't. SMTC session routing tracks playback
-activity, not OS window focus, so focusing a window doesn't influence which
-session Windows treats as current; a parameter that implied otherwise would
-be a false promise, not a real fix. What execute() actually does instead:
-records which app was the active session before sending the key
-(tools/_smtc.py), then re-checks THAT SPECIFIC app's own playback state
-afterward (not just whichever session is "current" by then, which turned
-out to be a second, related trap - "current" reassigned to an untouched
-Spotify the instant the correctly-paused YouTube tab stopped being most
-recently active, which would have read as a false "wrong app" result on a
-key press that actually worked fine). A confirmed status change on the
-original app is reported as confirmed; anything else - no change, or the
-session having disappeared - is reported as genuine uncertainty, not
-guessed at.
+caller - this tool included - can choose or force. Considered and
+rejected: an `app` parameter that focuses a target window first, on the
+theory that focus would redirect the key - it wouldn't. SMTC session
+routing tracks playback activity, not OS window focus, so focusing a
+window doesn't influence which session Windows treats as current; a
+parameter that implied otherwise would be a false promise, not a real fix.
+
+Verifying this went through three real, live-caught failures before
+landing correctly, each one worth keeping:
+1. Comparing only ONE session's PlaybackStatus before/after a key press
+   (not tracking which app it belonged to at all) reported a confident,
+   clean round trip that was actually two different apps - a pause that
+   hit a real YouTube tab, and a later "restore" key that hit Spotify
+   instead, because "current" had shifted between calls.
+2. Fixed to re-check one specific app's own session directly instead of
+   trusting "current" - better, but still checking only ONE app. On this
+   machine a single play_pause was then observed to change TWO sessions in
+   opposite directions in a single call (paused a playing YouTube tab AND
+   resumed an already-paused Spotify at once) - the one-app check reported
+   this as a confident, correct single-app result, because the one app it
+   happened to check genuinely had changed. It just wasn't the only one,
+   and the check had no way to know that.
+3. Fixed properly: execute() now diffs EVERY session that existed before
+   or after, not one - reports a single confirmed app only when exactly
+   one session actually changed, reports all of them plainly when more
+   than one did, and treats "more than one session changed from a single
+   key press" as a real, load-bearing finding about this tool's
+   reliability on a multi-source machine, not an edge case to explain away.
 """
 
 import asyncio
@@ -79,10 +88,11 @@ def spec() -> dict:
                 "row sends, with zero per-app setup. Real limitation: Windows routes this key "
                 "to whichever app it currently considers the active media session, based on "
                 "recent activity - not something this tool can choose. On a machine with more "
-                "than one media source open (e.g. a music app and a browser tab both playing "
-                "or recently active), this can affect a different app than the one meant. The "
-                "result tells you which app it believes was actually affected - check it "
-                "rather than assuming the intended app was hit."
+                "than one media source open (e.g. a music app and a browser tab), this can "
+                "affect a different app than the one meant, or - confirmed on this machine - "
+                "more than one app at once in opposite directions from a single press. The "
+                "result names every app it confirmed actually changed - read all of it, don't "
+                "assume only the intended app was hit or that only one app was affected."
             ),
             "parameters": {
                 "type": "object",
@@ -110,36 +120,45 @@ async def execute(action: str) -> str:
     if vk is None:
         return f"Error: unknown action {action!r}. Valid: {', '.join(_KEYS.keys())}."
 
-    app_before, status_before = _smtc.current_session()
+    active_before, _ = _smtc.current_session()
+    sessions_before = _smtc.all_sessions()
     _send_key(vk)
     await asyncio.sleep(_settle_delay_s())
-
-    if app_before is None:
-        return f"Sent media key: {action!r}. No active media session was detected beforehand - can't say what, if anything, this reached."
-
-    # Re-check app_before's OWN session directly, not just whichever session
-    # is "current" now - "current" can reassign to an untouched app the
-    # instant the one actually just affected stops being most recently
-    # active (confirmed live - see tools/_smtc.py's docstring), which would
-    # otherwise read as a false "wrong app" result on a key that worked fine.
     sessions_after = _smtc.all_sessions()
-    status_after = sessions_after.get(app_before)
 
-    if status_after is None:
+    # Diff EVERY session that existed on either side, not just whichever one
+    # was "active" beforehand - checking only one session's own state was a
+    # real bug, not just an oversight: on this machine, a single play_pause
+    # was observed to change TWO sessions in opposite directions in one call
+    # (paused a YouTube tab that was playing, resumed an already-paused
+    # Spotify), and a single-session check reported that as a confident,
+    # correct single-app result because the one session it happened to check
+    # really had changed - it just wasn't the only one. Only a full diff can
+    # catch that; see tools/_smtc.py's docstring for the live-caught history.
+    changed = []
+    for app in sorted(set(sessions_before) | set(sessions_after)):
+        before = sessions_before.get(app, "(no session)")
+        after = sessions_after.get(app, "(session gone)")
+        if before != after:
+            changed.append((app, before, after))
+
+    if not changed:
+        return f"Sent media key: {action!r}. No session's playback state changed - this key press may not have reached anything, or its effect isn't reflected in playback status."
+
+    if len(changed) == 1:
+        app, before, after = changed[0]
+        if app == active_before:
+            return f"Sent media key: {action!r}. Confirmed: affected {app!r} ({before} -> {after}), the session that was active beforehand."
         return (
-            f"Sent media key: {action!r}. {app_before!r} was the active session beforehand "
-            f"({status_before}), but no session for it exists anymore afterward - it may have "
-            "closed. Can't confirm what this actually affected."
+            f"Sent media key: {action!r}. Affected {app!r} ({before} -> {after}), but "
+            f"{active_before!r} was the session Windows considered active beforehand - the key "
+            "reached a different app than expected."
         )
 
-    if status_after != status_before:
-        return f"Sent media key: {action!r}. Confirmed: affected {app_before!r} ({status_before} -> {status_after})."
-
-    current_after, current_status_after = _smtc.current_session()
+    detail = "; ".join(f"{app!r} ({before} -> {after})" for app, before, after in changed)
     return (
-        f"Sent media key: {action!r}. {app_before!r}'s playback status is unchanged "
-        f"({status_before}) - this key press may not have reached it. Windows' active session "
-        f"is now {current_after!r} ({current_status_after}), which may be what it actually "
-        "affected instead. Can't confirm which app this reached - report that rather than "
-        "assuming either one."
+        f"Sent media key: {action!r}. More than one session changed state: {detail}. On this "
+        "machine a single key press can affect multiple apps at once, not only the one Windows "
+        "considers active - a single-app attribution from this tool cannot be trusted here. "
+        "Report all of the affected apps, not just one."
     )

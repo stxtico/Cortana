@@ -5,17 +5,20 @@ will affect. Shells out to PowerShell for the WinRT call (same pattern
 tools/_notify.py's winotify dependency already uses for toast display)
 rather than adding a new winsdk/winrt Python dependency for one query.
 
-Built after a real, live-caught bug: the first media_keys verification
-queried "the current session" before and after sending a key and compared
-only PlaybackStatus, silently assuming it was the same app both times. It
-wasn't - the pause landed on a YouTube tab, and by the time of the next
-query the current session had shifted to Spotify (SMTC's notion of
-"current" tracks recent activity, not a fixed target), so what looked like
-a clean Playing -> Paused -> Playing round trip was actually two different
-apps: a video left paused and an unrelated app resumed. Every function here
-returns the session's source app alongside its playback state for exactly
-this reason - never one without the other, so a caller can never repeat
-that mistake by construction.
+Built after real, live-caught bugs in media_keys' own verification, in two
+stages: first, comparing "the current session"'s PlaybackStatus before and
+after a key without tracking which app it belonged to reported a clean
+round trip that was actually two different apps (a pause that landed on a
+YouTube tab, a later key that hit Spotify instead, because SMTC's notion of
+"current" had shifted between calls). Fixed to check one specific app's own
+session directly - still wrong, because on this machine a single key press
+was then observed to change TWO sessions in opposite directions at once
+(paused a playing YouTube tab and resumed an already-paused Spotify
+together), and checking only one app reported that as a confident,
+correct single-app result. Every function here returns the session's
+source app alongside its playback state, and callers (tools/media_keys.py)
+are expected to diff EVERY session that exists before or after, not any
+one of them - the only way found so far not to repeat either mistake.
 """
 
 import subprocess

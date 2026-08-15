@@ -171,23 +171,27 @@ A8's tool-calling demands first, see Done below)
   (`ToastEnabled = 0` — Windows notifications disabled system-wide on this machine, left for
   the user to flip, not this session's call). `notify` and the daemon's new toast path both
   now report/fall back to the honest state instead of silently succeeding or dropping the
-  message. `media_keys`'s first verification pass was itself wrong, and it mattered: pivoted
-  from screenshots (Spotify's own UI turned out chrome-less, no persistent transport bar to
-  diff, plus a separate real `ImageGrab` bug with negative-origin window rects on this
-  dual-monitor layout) to Windows' own System Media Transport Controls API, but the test only
-  compared *a* session's `PlaybackStatus` before/after, never its *identity* — a reported
-  clean `Playing → Paused → Playing` round trip was actually two different apps: the pause
-  hit a real YouTube tab, the "restore" key (sent without re-checking who was current) hit
-  Spotify instead, caught only by the user noticing the actual audio. Fixed properly:
-  `tools/_smtc.py` (new) exposes `all_sessions()`, and `media_keys.execute()` now re-checks
-  the *specific* app that was active before the key, not just whichever session is "current"
-  afterward — current can reassign to an untouched app the instant the one actually just
-  affected stops being most recently active, confirmed live (a correctly-paused YouTube tab
-  briefly looked like a "wrong app" false negative under the naive check). An `app` parameter
-  that focuses a target window first was considered and rejected — SMTC routing tracks
-  playback activity, not window focus, so it wouldn't have worked and would have been a false
-  promise. The result now reports which app it confirmed changed, or honest uncertainty when
-  it can't confirm — never a guess. `transcribe_media` added
+  message. `media_keys` verification took two real, live-caught bugs to get right, and the
+  second one mattered more than the first: comparing *a* session's `PlaybackStatus`
+  before/after without tracking *identity* reported a false clean round trip (a pause hit a
+  real YouTube tab, a later "restore" key hit Spotify instead, caught by the user noticing
+  the actual audio, not by anything checked). The first fix - re-checking one specific app's
+  own session instead of "current" - was itself still wrong: on this machine a single
+  `play_pause` was observed to change TWO sessions in opposite directions in one call (paused
+  a playing YouTube tab, resumed an already-paused Spotify, together), and checking only one
+  app reported that as a confident, correct single-app result, because the app it happened to
+  check genuinely had changed. Fixed properly by diffing every session that existed before or
+  after a key press, not one — `tools/_smtc.py`'s `all_sessions()` — reporting a single
+  confirmed app only when exactly one session changed, and every affected app plainly when
+  more than one did. Re-tested with an honest, un-engineered setup (YouTube playing, Spotify
+  already paused) and no restore key sent afterward, cross-checked against an independent
+  session dump: this run changed only one session, matching the tool's report exactly — the
+  earlier two-session behavior wasn't reproduced on this trial, which is recorded as an open,
+  unexplained characteristic of this tool on a multi-source machine, not as resolved. An
+  `app` parameter that focuses a target window first was considered and rejected both times —
+  SMTC routing tracks playback activity, not window focus, so it wouldn't work and would be a
+  false promise. The result now names every app confirmed to have changed, or reports honest
+  uncertainty — never a single guessed winner. `transcribe_media` added
   `Transcriber.transcribe_file()` to `services/ears/stt.py` and live-transcribed a real voice
   reference recording accurately. `capability_list` reports three states (available/
   gated-behind-confirmation/dormant-with-a-reason) sourced from the live 28-tool registry and
