@@ -244,6 +244,26 @@ A8's tool-calling demands first, see Done below)
   tool) before confirming the file was genuinely recoverable, not permanently unlinked.
   11/11 checks passed. `capability_list`'s `_DORMANT_REASONS` extended for `email_draft`
   and `ocr`. [docs/history/A24.md](docs/history/A24.md)
+- **A24 follow-up, same session** — Tesseract installed live (`winget ... --silent`, at the
+  user's explicit override of the "you install system deps yourself" default), which
+  surfaced two real bugs `is_available()` alone couldn't have caught: winget's silent mode
+  doesn't add the binary to PATH (fixed in `tools/_ocr.py` with a fallback to the standard
+  install location, verified by actually invoking it, not just checking the file exists —
+  scoped to the tool, not a machine-wide PATH edit), and `extract_text()` assumed a prior
+  `is_available()` call in the same process had already configured
+  `pytesseract.pytesseract.tesseract_cmd` — true in the live agent loop, false the moment
+  `ocr.execute()` was called standalone during this fix's own verification, which raised a
+  raw `TesseractNotFoundError` instead of trying the fallback. Fixed by making both calls
+  go through the same self-resolving `_resolve()`, no cross-call coupling on a global.
+  Re-verified end to end through the real `ocr` tool and `look_at_screen` (not the raw
+  helper) against a real screenshot of this session's own window, per explicit instruction
+  ("clean synthetic rendering is the easy case") — found OCR is mostly right on real UI text
+  but not exact (real word-boundary/spacing errors: "Runit" for "Run it", "cloneon" for
+  "clone on"), a materially different and more honest claim than the earlier synthetic test
+  supported. Corrected "exact" language to "recognition, not fabrication" across
+  `tools/ocr.py`/`tools/screen.py`/`tools/_ocr.py` — OCR still never invents content the way
+  vision can, but it isn't a lookup like UIA either, and the tool's own output now says so.
+  `ocr.is_available()` is `True`; `capability_list` reports it available, not dormant.
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b

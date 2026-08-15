@@ -2,25 +2,33 @@
 read-only counterpart to tools/computer.py: she can answer questions about
 what's on screen without acting on it. Same tiering discipline as
 computer.py's resolution path - prefer the accessibility tree for anything
-structured (window titles, control names, visible text are exact via UIA),
-OCR next for on-screen text UIA's tree doesn't expose (text baked into an
-image - a screenshot inside a screenshot, a rendered PDF, a game/canvas UI),
-vision last for what neither can express (layout, images, "what does this
-look like"). Asking a vision model to transcribe text it can already get
-exactly from UIA or OCR is strictly worse - it's a measured fabrication risk
-(CLAUDE.md's Known model limitations), not just a redundant call. All
-signals that are actually available are gathered every call (this is an
-on-request tool, not a per-turn cost) and returned with their attribution
-baked directly into the string, not left to the calling model to get right -
-the same "constrain the shape, don't trust the wording" reasoning CLAUDE.md's
-documented ~2/3 instruction-following ceiling makes necessary everywhere else
-in this codebase (A5a, A18's find_file). UIA- and OCR-sourced content are
-both stated as fact ("reads:"); vision-sourced content is explicitly hedged
-("it looks like...") - PROMPTS.md's own instruction, "confidence is
-uncorrelated with accuracy here." OCR is gated on tools/_ocr.py's
-is_available() (Tesseract genuinely reachable, not just the package
-importing) - dormant until installed, silently omitted from the response
-rather than attempted and failing.
+structured (window titles, control names, visible text are exact via UIA -
+a real string value, no recognition involved), OCR next for on-screen text
+UIA's tree doesn't expose (text baked into an image - a screenshot inside a
+screenshot, a rendered PDF, a game/canvas UI), vision last for what neither
+can express (layout, images, "what does this look like"). Asking a vision
+model to transcribe text UIA or OCR can already read is still strictly worse
+- it's a measured fabrication risk (CLAUDE.md's Known model limitations),
+not just a redundant call - but OCR itself is character recognition, not a
+lookup: live-tested against a real screenshot of this session's own window
+(small, anti-aliased real UI text, not a clean synthetic render), it came
+back mostly right with real word-boundary/spacing errors. A fundamentally
+more trustworthy failure mode than vision's fabrication (garbled-but-real
+text, not invented content) but not "exact" the way UIA is - the output
+below is worded to reflect that difference, not to claim OCR is as reliable
+as the accessibility tree. All signals that are actually available are
+gathered every call (this is an on-request tool, not a per-turn cost) and
+returned with their attribution baked directly into the string, not left to
+the calling model to get right - the same "constrain the shape, don't trust
+the wording" reasoning CLAUDE.md's documented ~2/3 instruction-following
+ceiling makes necessary everywhere else in this codebase (A5a, A18's
+find_file). UIA-sourced content is stated as fact ("reads:"); OCR-sourced
+content is labeled as recognition, not fact; vision-sourced content is
+explicitly hedged ("it looks like...") - PROMPTS.md's own instruction,
+"confidence is uncorrelated with accuracy here." OCR is gated on
+tools/_ocr.py's is_available() (Tesseract genuinely reachable, not just the
+package importing) - dormant until installed, silently omitted from the
+response rather than attempted and failing.
 
 No REQUIRES_CONFIRMATION - a pure read, same as read_file/list_dir/
 fetch_url/web_search (CLAUDE.md rule 4: confirmation gates actions that
@@ -62,10 +70,10 @@ CONFIG_PATH = ROOT / "config" / "cortana.toml"
 
 _VISION_PROMPT = (
     "Answer this question about what's visible in the screenshot, in one or two sentences: {question}\n"
-    "Exact on-screen text is already captured separately (accessibility tree and/or OCR) - "
-    "focus on layout, visuals, and anything text extraction can't express, rather than "
-    "trying to transcribe text yourself. Describe only what you can actually see - don't "
-    "guess at anything you can't clearly make out."
+    "On-screen text is already captured separately (accessibility tree and/or OCR) - focus "
+    "on layout, visuals, and anything text extraction can't express, rather than trying to "
+    "transcribe text yourself. Describe only what you can actually see - don't guess at "
+    "anything you can't clearly make out."
 )
 
 
@@ -213,7 +221,7 @@ async def execute(question: str, app: str | None = None) -> str:
         lines.append("On-screen text: none readable via the accessibility tree for this window.")
     if ocr_available:
         if ocr_text:
-            lines.append(f"\nOn-screen text (exact, via OCR - catches text baked into the image that the accessibility tree doesn't expose):\n  {ocr_text}")
+            lines.append(f"\nOn-screen text (via OCR, character recognition against the actual pixels - catches text baked into the image that the accessibility tree doesn't expose, but can misread small/dense text with word-boundary or spacing errors; unlike vision, it can't invent content that isn't there):\n  {ocr_text}")
         elif ocr_error:
             lines.append(f"\n{ocr_error}")
     if vision_description:
