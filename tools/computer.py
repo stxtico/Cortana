@@ -1,7 +1,9 @@
-"""computer (PROMPTS.md A18/A22) - GUI automation: resolves a target through
+"""computer (PROMPTS.md A18/A22/A25) - GUI automation: resolves a target through
 the accessibility tree first (tools/_computer_uia.py, Windows UI Automation),
-then Playwright for browsers (tools/_computer_playwright.py, dormant until a
-debug-port browser exists), then a CLI recipe where one is configured
+then Playwright for browsers (tools/_computer_playwright.py; the debug-port
+Chrome it needs is a deliberate scope decision, activated as of A25 - see
+CLAUDE.md's A25 entry and that module's own docstring for what it exposes),
+then a CLI recipe where one is configured
 (tools/_computer_cli.py), and only as a last resort, a purpose-built
 grounding model + coordinates (tools/_computer_vision.py, [models].
 vision_grounding = gta1-7b as of A22 - see below). This ordering isn't a
@@ -45,14 +47,29 @@ confirm regardless of action type, a deliberate addition beyond the four
 named categories - the target itself is unreliably identified there, not
 just the action.
 
-Per-application allowlist ([tools.computer.apps]) is enforced twice: the
-`app` parameter's JSON-schema enum means the model structurally cannot name
-an app that isn't configured (constrain the input's shape, not filter its
-content - the same reasoning tools/shell.py's command whitelist and A14's
-tools/_cad_units.py's unit-tagged dimensions both apply), and the actual
-foreground process is re-checked live immediately before every click/type -
-not cached from when the target was resolved, in case a different app
-grabbed focus in between.
+PROMPTS.md A25: [tools.computer.apps] was originally an allowlist - the
+`app` parameter's JSON-schema enum was built from its keys, so the model
+structurally could not name an app that wasn't configured. Inverted to
+default-allow: `app` is now a free-form string (any process-name-like
+substring), [tools.computer.apps] holds only optional per-app overrides
+(a specific open_command recipe, a non-obvious match_process, Playwright
+routing - see that config table's own comment), and the real protection was
+never the allowlist itself - it's everything else this docstring already
+describes (confirmation gates, the kill switch, password refusal,
+verification) plus one new rail: [tools].excluded_windows, shared with
+tools/screen.py (A25; see that config key's comment for why it's one list,
+not two) - "windows she never drives," checked two ways: structurally, at
+enumeration time (tools/_computer_uia.py's find_top_level_hwnds() never even
+walks an excluded window's UI Automation tree, so its content is never read
+in the first place - not just refused afterward), and again, live,
+immediately before every actual click/type alongside the existing foreground
+re-check below - the second check is what actually protects the Playwright
+and vision resolution tiers, which don't go through find_top_level_hwnds()'s
+structural filter at all. The actual foreground process (now also its
+window title) is still re-checked live immediately before every click/type -
+not cached from when the target was resolved, in case a different app (or a
+different, excluded window of the SAME app - a browser tab navigating to a
+bank mid-session, say) grabbed focus in between.
 
 Typing is only permitted when the target was resolved via UI Automation
 (uia or uia_setofmark - see below), where CurrentIsPassword is a real,
@@ -94,6 +111,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+import win32gui
+
 from services.brain import agent_safety
 from services.character import walk_signal
 from tools import (
@@ -134,6 +153,12 @@ def _computer_config() -> dict:
     return _load_config().get("tools", {}).get("computer", {})
 
 
+def _excluded_windows() -> list[str]:
+    """PROMPTS.md A25 - [tools].excluded_windows, shared with tools/screen.py
+    (see that config key's comment for why it's one list, not two)."""
+    return _load_config().get("tools", {}).get("excluded_windows", [])
+
+
 def _log(record: dict) -> None:
     LOG_PATH.parent.mkdir(exist_ok=True)
     with LOG_PATH.open("a") as f:
@@ -152,18 +177,21 @@ def _progress(stage: str) -> None:
 
 
 def spec() -> dict:
-    config = _computer_config()
-    apps = list(config.get("apps", {}).keys())
+    excluded = _excluded_windows()
+    excluded_note = f" Never drives any window matching: {', '.join(excluded)}." if excluded else ""
     return {
         "type": "function",
         "function": {
             "name": "computer",
             "description": (
-                "Control the mouse/keyboard to interact with a real desktop application. "
-                f"Only these allowlisted apps: {', '.join(apps) if apps else '(none configured)'}. "
+                "Control the mouse/keyboard to interact with a real desktop application - any "
+                f"application on the machine, except an excluded list.{excluded_note} `app` is the "
+                "application's process name or a recognizable substring (e.g. 'chrome', 'notepad', "
+                "'spotify') - use window_list first if you're not sure what to name it. "
                 "action='open' launches the app directly (e.g. a folder or file path) rather than "
-                "clicking through its UI - the fastest, most reliable path when a direct command "
-                "exists. action='click'/'double_click' resolves a real on-screen control by name/"
+                "clicking through its UI - only works for apps with a specifically configured launch "
+                "recipe ([tools.computer.apps] in config), refused cleanly otherwise rather than "
+                "guessed. action='click'/'double_click' resolves a real on-screen control by name/"
                 "description (the accessibility tree first, never guessed pixels unless every other "
                 "resolution method fails) and clicks it, with a visible walk-and-cursor-move "
                 "performance step that can be aborted mid-motion. action='type' types text into "
@@ -175,7 +203,7 @@ def spec() -> dict:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "app": {"type": "string", "enum": apps, "description": "Which allowlisted application to act on."},
+                    "app": {"type": "string", "description": "The application's process name or a recognizable substring (e.g. 'chrome', 'notepad', 'explorer')."},
                     "action": {"type": "string", "enum": ["open", "click", "double_click", "type"]},
                     "path": {"type": "string", "description": "For action='open': the path/argument to open (e.g. a folder path)."},
                     "target": {"type": "string", "description": "For click/double_click/type: a plain description of the on-screen element (e.g. 'the bracket file', 'the Submit button')."},
@@ -203,7 +231,7 @@ def _matches_trigger(text: str, triggers: list[str]) -> bool:
     return any(t.lower() in lowered for t in triggers)
 
 
-async def _resolve(app_cfg: dict, target: str) -> _Target | None:
+async def _resolve(app_cfg: dict, target: str, excluded_titles: list[str]) -> _Target | None:
     """Runs the resolution tiers in priority order, returns the first hit or
     None if every tier misses - a miss is an ordinary outcome (returned to
     the model as "couldn't find it"), never an exception.
@@ -215,18 +243,22 @@ async def _resolve(app_cfg: dict, target: str) -> _Target | None:
     overlap analysis found cross-validating every action would have added
     latency for no benefit - 25/33 benchmark targets had both UIA and the
     grounder fire, and of those, 21 were the grounder merely agreeing with an
-    already-exact answer and the other 4 were the grounder being wrong."""
+    already-exact answer and the other 4 were the grounder being wrong.
+
+    excluded_titles (PROMPTS.md A25) is passed to every UIA enumeration call
+    below, so an excluded window is never walked/read for this target at
+    all - not resolved-then-refused, genuinely never examined."""
     computer_cfg = _computer_config()
     process_match = app_cfg.get("match_process", "")
     resolve_hwnd: int | None = None
 
     if process_match:
-        uia_result = _computer_uia.resolve(process_match, name=target)
+        uia_result = _computer_uia.resolve(process_match, name=target, excluded_titles=excluded_titles)
         if uia_result is not None:
             return _Target(uia_result.center_x, uia_result.center_y, uia_result.name, "uia", uia_result.is_password, uia_result.hwnd)
 
         threshold = computer_cfg.get("fuzzy_match_threshold", 0.6)
-        candidates = _computer_uia.find_candidates(process_match, target, threshold=threshold)
+        candidates = _computer_uia.find_candidates(process_match, target, threshold=threshold, excluded_titles=excluded_titles)
         if candidates:
             resolve_hwnd = candidates[0].hwnd
             description_model = _load_config().get("models", {}).get("vision", "")
@@ -241,7 +273,7 @@ async def _resolve(app_cfg: dict, target: str) -> _Target | None:
             # (this is exactly cortana's own control panel case from A22
             # Step 1: zero UIA elements, but the window itself is still a
             # real, enumerable top-level window).
-            top_hwnds = _computer_uia.find_top_level_hwnds(process_match)
+            top_hwnds = _computer_uia.find_top_level_hwnds(process_match, excluded_titles)
             resolve_hwnd = top_hwnds[0] if top_hwnds else None
 
     playwright_cfg = app_cfg.get("playwright", {})
@@ -249,7 +281,7 @@ async def _resolve(app_cfg: dict, target: str) -> _Target | None:
         port = playwright_cfg.get("cdp_port", 9222)
         if await _computer_playwright.is_available(port):
             selector = playwright_cfg.get("selector_template", "text={target}").format(target=target)
-            pw_result = await _computer_playwright.resolve(port, selector)
+            pw_result = await _computer_playwright.resolve(port, selector, excluded_titles=excluded_titles)
             if pw_result is not None:
                 return _Target(pw_result.center_x, pw_result.center_y, pw_result.name, "playwright")
 
@@ -292,9 +324,16 @@ async def _perform_click(x: int, y: int, double: bool) -> None:
 async def execute(app: str, action: str, path: str | None = None, target: str | None = None, text: str | None = None) -> str:
     config = _computer_config()
     apps_cfg = config.get("apps", {})
-    app_cfg = apps_cfg.get(app)
-    if app_cfg is None:
-        return f"Error: {app!r} is not an allowlisted application."
+    # PROMPTS.md A25: apps_cfg is now optional per-app overrides, not a gate -
+    # an unconfigured app falls back to using its own name as match_process
+    # (a process-name substring, e.g. "notepad" matches "notepad.exe"). A
+    # copy, not a mutation of the config dict itself - _load_config() re-reads
+    # the file fresh every call, so this is thrown away next call regardless,
+    # but dict.setdefault on the raw .get() result would still be surprising.
+    app_cfg = dict(apps_cfg.get(app, {}))
+    app_cfg.setdefault("match_process", app)
+
+    excluded_windows = _excluded_windows()
 
     confirm_triggers = config.get("confirm_triggers", _DEFAULT_CONFIRM_TRIGGERS)
 
@@ -331,7 +370,7 @@ async def execute(app: str, action: str, path: str | None = None, target: str | 
         return "Error: 'target' is required for click/double_click/type."
 
     _progress(f"resolving {target!r} in {app} (accessibility tree first)...")
-    resolved = await _resolve(app_cfg, target)
+    resolved = await _resolve(app_cfg, target, excluded_windows)
     if resolved is None:
         _log({"stage": "action", "app": app, "action": action, "target": target, "resolved_via": None, "result": "not_found"})
         return f"Couldn't find {target!r} in {app} through any resolution method."
@@ -359,6 +398,21 @@ async def execute(app: str, action: str, path: str | None = None, target: str | 
     if app_cfg.get("match_process", "").lower() not in foreground.lower():
         _log({"stage": "action", "app": app, "action": action, "target": target, "resolved_via": resolved.resolved_via, "result": "refused_wrong_foreground", "foreground": foreground})
         return f"Refused: {app} is not the foreground application right now ({foreground} is) - not clicking blind."
+
+    # PROMPTS.md A25 - the second, live half of exclusion enforcement. The
+    # enumeration-level filter inside _resolve() above already stops an
+    # excluded window's UIA tree from ever being walked, but that filter
+    # doesn't cover the Playwright or vision resolution tiers (no
+    # find_top_level_hwnds() call in that path), and a window's title could
+    # in principle change between resolution and this exact moment (a browser
+    # tab navigating mid-sequence). Checked against the real, current
+    # foreground window - the same one the process check above just
+    # confirmed IS what's about to be clicked into - not the title captured
+    # at resolution time.
+    foreground_title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+    if _computer_uia.title_excluded(foreground_title, excluded_windows):
+        _log({"stage": "action", "app": app, "action": action, "target": target, "resolved_via": resolved.resolved_via, "result": "refused_excluded_window", "foreground_title": foreground_title})
+        return f"Refused: {foreground_title!r} matches this machine's excluded-windows list - never driven."
 
     if action == "type":
         if resolved.resolved_via not in _computer_verify.UIA_TIERS:

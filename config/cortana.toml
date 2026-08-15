@@ -365,6 +365,29 @@ max_result_chars = 3000
 # *when* asking is right; this bounds *how many* regardless of what the
 # model decides mid-turn.
 ask_user_max_per_turn = 1
+# PROMPTS.md A22 Step 4 (originally [tools.screen] only), promoted here in A25:
+# shared by BOTH tools/screen.py's look_at_screen (read) and tools/computer.py
+# (drive) - deliberately ONE list, not two, per explicit A25 instruction to
+# consider the question. Reasoning: the category this protects (password
+# managers, banking - "windows she never touches") has no case where you'd want
+# read-only access but not act-on access, or vice versa; a password manager
+# window is exactly as off-limits to look at as to click in. A duplicated list
+# (one per tool) is a real footgun - add your bank to one and forget the
+# other, and the "protected" tool still isn't. Case-insensitive substrings
+# matched against a window's title, checked BEFORE any capture/resolution
+# happens (tools/_computer_uia.py's find_top_level_hwnds()/resolve()/
+# find_candidates() all accept this list directly and never even walk a
+# matching window's UI Automation tree, not just refuse afterward) - same
+# "never expose the content in the first place" discipline look_at_screen
+# already used. Empty by default, same bootstrap reasoning as
+# [tools].write_whitelist_dirs above: this project doesn't guess at which
+# password manager or banking app a given install actually uses. This is a
+# real privacy rail, not a decorative default - add your own password
+# manager's window title (e.g. "1Password", "Bitwarden", "KeePass") and your
+# bank's browser tab title before relying on this feature, not after. Still
+# empty right now (A25) - same open gap A22/A23 already flagged, not
+# resolved by this session.
+excluded_windows = []
 
 [tools.search_content]
 # PROMPTS.md A23 - tools/search_content.py. Files larger than this are
@@ -443,18 +466,65 @@ confirm_triggers = ["send", "delete", "submit", "buy", "purchase", "confirm orde
 # real candidate never gets shown at all.
 fuzzy_match_threshold = 0.6
 
-# Per-application allowlist - she can drive exactly these apps, nothing else.
-# The `app` parameter's JSON-schema enum (tools/computer.py's spec()) is
-# built from this table's keys, so the model structurally cannot name an
-# app that isn't listed here - constrain the shape, don't filter content,
-# same reasoning as [tools.shell].whitelist. Empty by default in spirit
-# (only what's actually been decided safe to automate) - explorer is the
-# one entry here now because it's what this build's own end-to-end
-# verification exercises; add more deliberately, per real task, not
-# speculatively.
+# PROMPTS.md A25 - INVERTED from an allowlist to optional per-app overrides.
+# Before A25, this table's keys WERE the allowlist - the `app` parameter's
+# JSON-schema enum was built from them, so the model structurally couldn't
+# name an app not listed here. That's gone: `app` is now a free-form string
+# (any process-name-like substring), and every app not excluded by
+# [tools].excluded_windows above is drivable. The real protection was never
+# this table - it's the confirmation gate on send/delete/purchase/submit
+# triggers and on every vision/uia_setofmark-resolved click, the kill switch,
+# the live foreground re-check before every action, and A22's post-action
+# verification. All of that is unchanged by this inversion.
+#
+# What this table is FOR now: optional overrides for apps that need one.
+# tools/computer.py's execute() falls back to `match_process = app` (the
+# app string itself, substring-matched against real running process names)
+# for anything not listed here - that's enough for most apps ("notepad",
+# "spotify", "vscode" all work with no entry at all). An entry here is only
+# needed when: (1) action='open' should launch/navigate the app via a
+# specific recipe (no generic fallback exists for this - guessing a launch
+# command for an unconfigured app risks launching the wrong thing entirely,
+# so action='open' still refuses cleanly for apps without one), (2) the app
+# string alone is a poor process-name substring match, or (3) a browser needs
+# [tools.computer.apps.<name>.playwright] routing (see chrome below).
 [tools.computer.apps.explorer]
 match_process = "explorer.exe"
 open_command  = ["explorer.exe", "{path}"]
+
+# PROMPTS.md A25 - activates the Playwright resolution tier for real Chrome
+# tabs, dormant since A18 pending this session's explicit scope decision (see
+# CLAUDE.md's A25 entry and tools/_computer_playwright.py's docstring for what
+# launching Chrome with --remote-debugging-port actually exposes - an
+# authenticated CDP session reaches everything that profile is logged into,
+# a deliberate choice, not a technical default). UIA still tries first even
+# for chrome.exe (A22 measured 61 real UIA elements in Chrome directly - it's
+# real, just noisier for web content than for native apps); Playwright is the
+# second tier, ahead of vision, specifically for in-page DOM targets UIA's
+# tree doesn't resolve well. is_available() still checks the debug port live,
+# every call - this entry existing doesn't launch anything itself.
+[tools.computer.apps.chrome]
+match_process = "chrome.exe"
+[tools.computer.apps.chrome.playwright]
+cdp_port = 9222
+selector_template = "text={target}"
+
+[tools.computer.stats]
+# PROMPTS.md A25 - thresholds scripts/computer_stats.py checks when reading
+# logs/computer.jsonl, config-driven per CLAUDE.md rule 2 rather than a
+# hardcoded number in the script. Widening from one allowlisted app to any
+# app means the vision tier now fires on apps nobody has measured UIA
+# coverage for - these flags are what's supposed to make a real coverage
+# drop visible before it becomes a wrong click, not after.
+# Per app, share of actions resolved via uia/uia_setofmark below this
+# fraction of that app's total resolved actions triggers a WARNING line.
+uia_rate_warn_threshold = 0.5
+# Share of UIA-resolved (uia/uia_setofmark) actions whose verify_outcome is
+# "unchanged" or "vanished" above this fraction triggers a WARNING line -
+# the exact "a wrong UIA element still resolves and clicks with full
+# confidence" pattern A22 Step 3 built verification to catch, surfaced here
+# as an aggregate signal instead of only visible one log line at a time.
+uia_verify_fail_warn_threshold = 0.3
 
 [tools.computer.verify]
 # PROMPTS.md A22 Step 3 - tools/_computer_verify.py. Real wait for the OS/app
@@ -477,16 +547,9 @@ diff_threshold = 8.0
 
 [tools.screen]
 # PROMPTS.md A22 Step 4 - tools/screen.py's look_at_screen, the read-only
-# counterpart to [tools.computer]. Case-insensitive substrings matched
-# against a window's title before ANY capture (UIA text or screenshot) - a
-# match refuses the whole call outright. Empty by default, same bootstrap
-# reasoning as [tools].write_whitelist_dirs above: this project doesn't
-# guess at which password manager or banking app a given install actually
-# uses. This is a real privacy rail, not a decorative default - add your
-# own password manager's window title (e.g. "1Password", "Bitwarden",
-# "KeePass") and your bank's browser tab title before relying on this
-# feature, not after.
-excluded_windows = []
+# counterpart to [tools.computer]. excluded_windows moved to the shared
+# [tools].excluded_windows above in A25 - see that comment for why it's one
+# list, not a screen-only one.
 # Cap on how many distinct accessible-text strings look_at_screen gathers
 # from one window's UIA tree - bounds gather time on a very large/deep
 # window (same reasoning as tools/_computer_uia.py's find_candidates()

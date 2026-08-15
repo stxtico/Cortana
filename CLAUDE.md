@@ -8,9 +8,9 @@ and rationale — this file is the operating summary.
 **Phase:** 8 — The character (A15 done, holographic shader follow-up done); A18
 (computer use), A19 (marketing pipeline), A20 (attribution loop), A21 (delegation), A22
 (grounding upgrade + screen awareness, all four steps), A23 (tool wave 1, the system
-layer), and A24 (tool wave 2, deliverables) have all run ahead of the documented order,
-per explicit instruction each time. A16/A17 (camera/ambient awareness) are the next
-fully-untouched phase.
+layer), A24 (tool wave 2, deliverables), and A25 (default-allow computer use) have all
+run ahead of the documented order, per explicit instruction each time. A16/A17
+(camera/ambient awareness) are the next fully-untouched phase.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -264,6 +264,62 @@ A8's tool-calling demands first, see Done below)
   `tools/ocr.py`/`tools/screen.py`/`tools/_ocr.py` — OCR still never invents content the way
   vision can, but it isn't a lookup like UIA either, and the tool's own output now says so.
   `ocr.is_available()` is `True`; `capability_list` reports it available, not dormant.
+- **A25** — Default-allow computer use: `[tools.computer.apps]` inverted from an allowlist
+  (the `app` parameter's JSON-schema enum came from its keys — only `explorer` was ever
+  configured) to default-allow — `app` is now a free-form process-name-like string, and that
+  config table holds only optional per-app overrides (`open_command`, a non-obvious
+  `match_process`, Playwright routing). The real protection was never the allowlist — it's
+  the confirmation gate, kill switch, live foreground re-check, and A22's post-action
+  verification, all unchanged. `[tools.screen].excluded_windows` (A22) moved to shared
+  `[tools].excluded_windows` — one list, not two, after explicitly weighing the alternative:
+  the category it protects (password managers, banking) has no case where read-only access
+  should be allowed but driving it shouldn't. Enforced two ways: structurally, at
+  enumeration time (`tools/_computer_uia.py`'s `find_top_level_hwnds()` now takes
+  `excluded_titles` and never walks a matching window's UI Automation tree at all —
+  threaded through `resolve()`/`find_candidates()`, and into `tools/_computer_playwright.py`'s
+  `resolve()` per-PAGE, not just per-window, since a single Chrome window can hold many tabs
+  and only the active one's title shows at the OS level); and live, immediately before every
+  click/type, which is what actually protects the Playwright/vision tiers that don't go
+  through the structural filter. **Exclusion is per-window, not per-app** — a real design
+  property, not an incidental detail: excluding one window's title doesn't wall off an
+  entire application, since a resolution that can't use the excluded window correctly falls
+  through to any other, non-excluded window of the same process (confirmed live — see
+  below). Anyone populating `[tools].excluded_windows` needs a term that matches every window
+  of an app to wall off the whole thing, not just the one window seen when the list was
+  written. Ships empty — same gap A22/A23 already flagged, not resolved here.
+  Playwright activated (dormant since A18, gated on a debug-port Chrome existing — that part
+  didn't change; whether to actually put one in front of it was a deliberately unmade scope
+  decision until this session's explicit instruction). Added
+  `[tools.computer.apps.chrome]` (`match_process`/`playwright.cdp_port = 9222`) so the tier
+  can route. What launching Chrome with `--remote-debugging-port` exposes, stated plainly:
+  the same authenticated profile, not a sandbox — every logged-in site, saved-password
+  autofill, everything. Given the user the exact command for this machine (closes existing
+  Chrome first, since Chrome silently ignores the flag otherwise); not run — a real, standing
+  exposure the user turns on themselves, same as every other system-level install/config
+  change in this project. `capability_list` gained a live-computed **Scope notes** section
+  (`computer`/`look_at_screen`, both sharing the same default-allow-except shape) reading
+  `[tools].excluded_windows` at call time rather than a static description that would drift
+  the moment the list is actually populated — currently reports both as "EXCLUSION LIST IS
+  EMPTY." `scripts/computer_stats.py` (new) reads `logs/computer.jsonl` and reports
+  `resolved_via`/`verify_outcome` rates with config-driven warning thresholds
+  (`[tools.computer.stats]`) — A22 Step 3 already logged this data every action, but nothing
+  before this read it back and surfaced a rate; a real bug found running it against this
+  session's own log (action='open' calls always log `resolved_via="cli"`, which was inflating
+  the UIA-rate denominator and reporting a false 33% instead of the real 100% on click/type
+  actions — fixed by excluding `cli` from that calculation). Live-tested on Notepad, never in
+  the old allowlist: drove it through the real registered tool, verified the result via an
+  independent UIA re-query (Notepad's own character-count status text — read `"42 characters"`,
+  exactly the typed marker's length) rather than the tool's own return string. A real mistake
+  happened during cleanup, reported plainly rather than glossed over: killed a Notepad process
+  by PID intending to close only this session's own disposable test window, but modern Windows
+  11 Notepad can share one underlying process across multiple windows (the tabbed
+  single-instance model), and the kill took down a second, pre-existing, unrelated Notepad
+  window too (`errors.log`, opened before this session, not touched by any of this session's
+  actual typing). Investigated rather than assumed-fine: found the file via Windows' own
+  Recent Items shortcuts, confirmed its on-disk mtime predated this session by weeks and its
+  size was consistent with the character count read earlier in the same session — nothing was
+  lost, but the mistake (wrong assumption about process/window ownership) was real.
+  [docs/history/A25.md](docs/history/A25.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b

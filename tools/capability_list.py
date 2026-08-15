@@ -24,9 +24,24 @@ deliberately small and honest about its own incompleteness: a tool not
 covered by _DORMANT_REASONS still gets a generic fallback rather than
 silently vanishing from the dormant list or crashing - so a future gated
 tool added without an entry here degrades gracefully, not silently.
+
+PROMPTS.md A25 added scope notes for the same reason: available/gated/
+dormant is a binary per tool, but "can drive one allowlisted app" and "can
+drive anything except a short exclusion list" are very different answers to
+"what can you do," and A25 changed computer/look_at_screen from the former
+to the latter. A static description would drift the moment the exclusion
+list is actually populated (still empty right now - see below), so this
+reads [tools].excluded_windows live, same "never hand-maintain what's
+checkable" discipline as the rest of this module.
 """
 
+import tomllib
+from pathlib import Path
+
 REQUIRES_CONFIRMATION = False
+
+_ROOT = Path(__file__).resolve().parent.parent
+_CONFIG_PATH = _ROOT / "config" / "cortana.toml"
 
 _DORMANT_REASONS = {
     "web_search": "no search backend is currently reachable ([tools.web_search].backend in config/cortana.toml, and either a Tavily API key or a live SearXNG endpoint)",
@@ -37,6 +52,28 @@ _DORMANT_REASONS = {
     "ocr": "Tesseract isn't installed on this machine (winget install --id UB-Mannheim.TesseractOCR)",
 }
 _DEFAULT_DORMANT_REASON = "a dependency this tool needs isn't currently available"
+
+_SCOPE_NOTE_TOOLS = {"computer", "look_at_screen"}
+
+
+def _excluded_windows() -> list[str]:
+    with _CONFIG_PATH.open("rb") as f:
+        config = tomllib.load(f)
+    return config.get("tools", {}).get("excluded_windows", [])
+
+
+def _scope_note(name: str, excluded: list[str]) -> str:
+    """PROMPTS.md A25 - computer and look_at_screen share one exclusion list
+    ([tools].excluded_windows) and the same default-allow-except shape, so
+    one note format covers both; the verb differs (drive vs. read)."""
+    verb = "drive any application's UI (click/type)" if name == "computer" else "read the content of any window"
+    if excluded:
+        return f"{name}: can {verb}, except {len(excluded)} excluded window(s): {', '.join(excluded)}."
+    return (
+        f"{name}: can {verb} - EXCLUSION LIST IS EMPTY. Nothing is actually walled off right now; "
+        f"add password-manager/banking window titles to [tools].excluded_windows in config/cortana.toml "
+        f"before treating this as a real boundary, not after."
+    )
 
 
 def spec() -> dict:
@@ -79,4 +116,10 @@ async def execute() -> str:
         _format_section("Available, but asks for confirmation before each use:", gated),
         _format_section("Currently dormant (a real dependency is missing - not offered to you at all right now):", dormant),
     ]
+
+    excluded = _excluded_windows()
+    scope_notes = [_scope_note(name, excluded) for name in sorted(_SCOPE_NOTE_TOOLS) if name in agent._ALL_TOOLS]
+    if scope_notes:
+        sections.append(_format_section("Scope notes (these tools are broader than a plain 'available' entry implies):", scope_notes))
+
     return "\n\n".join(sections)

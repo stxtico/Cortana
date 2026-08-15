@@ -39,11 +39,12 @@ Privacy rails, all real code here, not persona text:
   written to disk anywhere in this module - grep for `.save(` here and the
   only call is to an in-memory buffer, same pattern tools/_computer_vision.py
   and tools/_computer_setofmark.py already established.
-- [tools.screen].excluded_windows (config/cortana.toml) is checked BEFORE
-  any capture happens - a match refuses the whole call outright, not just
-  the vision half, so an excluded window's on-screen text never reaches UIA
-  extraction either. Empty by default, same "no directory is write-
-  authorized until you explicitly add one" bootstrap precedent as
+- [tools].excluded_windows (config/cortana.toml, shared with tools/computer.py
+  as of A25 - moved out of [tools.screen], see that config key's comment) is
+  checked BEFORE any capture happens - a match refuses the whole call
+  outright, not just the vision half, so an excluded window's on-screen text
+  never reaches UIA extraction either. Empty by default, same "no directory
+  is write-authorized until you explicitly add one" bootstrap precedent as
   [tools].write_whitelist_dirs - this project doesn't guess at which
   password manager or banking app a given install actually uses.
 - Capture only ever happens inside execute(), called only when the model
@@ -110,17 +111,27 @@ def _screen_config() -> dict:
     return _load_config().get("tools", {}).get("screen", {})
 
 
-def _resolve_target_hwnd(app: str | None) -> int | None:
+def _excluded_windows() -> list[str]:
+    """PROMPTS.md A25 - [tools].excluded_windows, shared with tools/computer.py
+    (moved out of [tools.screen] - see that config key's comment)."""
+    return _load_config().get("tools", {}).get("excluded_windows", [])
+
+
+def _resolve_target_hwnd(app: str | None, excluded: list[str]) -> int | None:
+    """When app names multiple real windows and one is excluded (e.g. one of
+    several Chrome windows is a banking tab), excluded_titles being passed
+    into find_top_level_hwnds() means that window is skipped at enumeration
+    time and a non-excluded match (if any) is returned instead - not the
+    all-or-nothing "app has an excluded window somewhere, refuse the whole
+    lookup" this would otherwise be. The foreground (app=None) path can't be
+    pre-filtered this way - there's no enumeration to filter, just "whatever
+    currently has focus" - so execute() below still does the post-resolve
+    title check unconditionally, which is what actually protects that path."""
     if app:
-        hwnds = _computer_uia.find_top_level_hwnds(app)
+        hwnds = _computer_uia.find_top_level_hwnds(app, excluded)
         return hwnds[0] if hwnds else None
     hwnd = win32gui.GetForegroundWindow()
     return hwnd if hwnd else None
-
-
-def _is_excluded(title: str, excluded: list[str]) -> bool:
-    title_l = title.lower()
-    return any(term.lower() in title_l for term in excluded)
 
 
 def _gather_uia_text(hwnd: int, max_items: int) -> list[str]:
@@ -170,17 +181,17 @@ def _image_to_b64(img) -> str:
 
 
 async def execute(question: str, app: str | None = None) -> str:
-    hwnd = _resolve_target_hwnd(app)
+    excluded = _excluded_windows()
+    hwnd = _resolve_target_hwnd(app, excluded)
     if hwnd is None:
         return f"Couldn't find a window for {app!r} - is it open?" if app else "No window currently has focus."
 
     title = win32gui.GetWindowText(hwnd)
 
-    config = _screen_config()
-    excluded = config.get("excluded_windows", [])
-    if _is_excluded(title, excluded):
+    if _computer_uia.title_excluded(title, excluded):
         return f"Refused: {title!r} matches this machine's excluded-windows list - never captured."
 
+    config = _screen_config()
     max_items = config.get("max_text_items", 150)
     uia_texts = _gather_uia_text(hwnd, max_items)
 

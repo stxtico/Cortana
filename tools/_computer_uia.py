@@ -162,7 +162,19 @@ def _name_matches(info_name: str, target: str) -> bool:
     return info_name == target.rsplit(".", 1)[0]
 
 
-def find_top_level_hwnds(process_match: str) -> list[int]:
+def title_excluded(title: str, excluded: list[str]) -> bool:
+    """Case-insensitive substring match against [tools].excluded_windows
+    (config/cortana.toml) - shared by tools/screen.py and tools/computer.py
+    (PROMPTS.md A25; see that config key's comment for why it's one list,
+    not two). Kept here rather than duplicated in each caller since this is
+    also where find_top_level_hwnds() below enforces it structurally."""
+    if not excluded:
+        return False
+    title_l = title.lower()
+    return any(term.lower() in title_l for term in excluded)
+
+
+def find_top_level_hwnds(process_match: str, excluded_titles: list[str] | None = None) -> list[int]:
     """Real top-level window enumeration by owning-process name, not
     pywinauto's connect(path=process_match). Found live during A22's
     grounding benchmark: connect(path="Code.exe") raises
@@ -181,13 +193,27 @@ def find_top_level_hwnds(process_match: str) -> list[int]:
     Returns every matching top-level window's hwnd (not just one) - a
     process can legitimately own several real windows (multiple Explorer
     folders, multiple Chrome/VS Code windows), and the caller needs to try
-    each rather than assume the first one found is the right one."""
+    each rather than assume the first one found is the right one.
+
+    excluded_titles (PROMPTS.md A25), when given, drops any window whose
+    title matches before it's ever returned - resolve()/find_candidates()
+    below never walk an excluded window's UI Automation tree at all, not
+    just refuse to click in it afterward, same "never expose the content in
+    the first place" discipline tools/screen.py already applied to capture.
+    Defaults to None (no filtering) so window_list.py's existing bare call
+    (it deliberately lists every window - a window's existence isn't the
+    sensitive part, its content is) and tools/_computer_verify.py's
+    post-action re-query (already re-checking a target that passed this
+    gate moments ago) are both unaffected."""
     hwnds = []
 
     def _cb(hwnd, _):
         if not win32gui.IsWindowVisible(hwnd):
             return
-        if not win32gui.GetWindowText(hwnd):
+        title = win32gui.GetWindowText(hwnd)
+        if not title:
+            return
+        if excluded_titles and title_excluded(title, excluded_titles):
             return
         if win32gui.GetClassName(hwnd) == "Progman":
             return  # the desktop shell, also owned by explorer.exe - never a real app window
@@ -213,6 +239,7 @@ def resolve(
     name: str | None = None,
     control_type: str | None = None,
     automation_id: str | None = None,
+    excluded_titles: list[str] | None = None,
 ) -> ResolvedElement | None:
     """Finds a control within the window(s) owned by a process matching
     process_match (substring match against the process name, e.g. 'explorer'
@@ -223,8 +250,11 @@ def resolve(
     search). Returns None if no window or no matching control is found -
     callers (computer.py) fall through to the next resolution tier on None,
     never on an exception from here (a resolution miss is an expected,
-    ordinary outcome, not an error condition)."""
-    for hwnd in find_top_level_hwnds(process_match):
+    ordinary outcome, not an error condition).
+
+    excluded_titles (PROMPTS.md A25) is passed straight through to
+    find_top_level_hwnds() - see that function's docstring."""
+    for hwnd in find_top_level_hwnds(process_match, excluded_titles):
         app = pywinauto.Application(backend="uia")
         try:
             app.connect(handle=hwnd)
@@ -312,7 +342,13 @@ def _fuzzy_matches(info_name: str, target: str, threshold: float = 0.6) -> bool:
     return any(difflib.SequenceMatcher(None, name_l, g).ratio() >= threshold for g in grams)
 
 
-def find_candidates(process_match: str, target: str, max_results: int = 12, threshold: float = 0.6) -> list[ResolvedElement]:
+def find_candidates(
+    process_match: str,
+    target: str,
+    max_results: int = 12,
+    threshold: float = 0.6,
+    excluded_titles: list[str] | None = None,
+) -> list[ResolvedElement]:
     """Real ambiguity detection for PROMPTS.md A22 Step 2 - called only after
     resolve()'s exact-name lookup has already missed. Returns every element
     whose real accessible name loosely matches target (see _fuzzy_matches()),
@@ -326,10 +362,13 @@ def find_candidates(process_match: str, target: str, max_results: int = 12, thre
     guessing which one is right or re-running the raw pixel-coordinate
     grounder redundantly - every candidate here already has a real, exact
     UIA-sourced rectangle, so the model's job is picking an index, never
-    inventing a location."""
+    inventing a location.
+
+    excluded_titles (PROMPTS.md A25) is passed straight through to
+    find_top_level_hwnds() - see that function's docstring."""
     seen = set()
     results = []
-    for hwnd in find_top_level_hwnds(process_match):
+    for hwnd in find_top_level_hwnds(process_match, excluded_titles):
         app = pywinauto.Application(backend="uia")
         try:
             app.connect(handle=hwnd)
