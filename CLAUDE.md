@@ -191,7 +191,15 @@ A8's tool-calling demands first, see Done below)
   `app` parameter that focuses a target window first was considered and rejected both times —
   SMTC routing tracks playback activity, not window focus, so it wouldn't work and would be a
   false promise. The result now names every app confirmed to have changed, or reports honest
-  uncertainty — never a single guessed winner. `transcribe_media` added
+  uncertainty — never a single guessed winner. Added `media_control` as the structural fix
+  `media_keys` can't offer: SMTC exposes per-session `TryPlayAsync`/`TryPauseAsync`/
+  `TrySkipNextAsync`/`TrySkipPreviousAsync` (`tools/_smtc.py`'s `control_session()`, invoked
+  via a real temp `.ps1` file with `-AppId`/`-Action` as separate parameters, never
+  interpolated into a `-Command` string) — a specific app id, no routing heuristic to be wrong
+  about. Tested on the exact scenario that broke `media_keys` twice: YouTube paused, Spotify
+  paused, resumed YouTube specifically — only that session changed, cross-checked against an
+  independent session dump. `media_keys` stays the no-app-name tool; `media_control` is for
+  when the app is known. `transcribe_media` added
   `Transcriber.transcribe_file()` to `services/ears/stt.py` and live-transcribed a real voice
   reference recording accurately. `capability_list` reports three states (available/
   gated-behind-confirmation/dormant-with-a-reason) sourced from the live 28-tool registry and

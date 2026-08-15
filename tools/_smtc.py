@@ -22,6 +22,8 @@ one of them - the only way found so far not to repeat either mistake.
 """
 
 import subprocess
+import tempfile
+from pathlib import Path
 
 _PS_PREAMBLE = r"""
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -52,6 +54,37 @@ foreach ($session in $manager.GetSessions()) {
     Write-Output "$($session.SourceAppUserModelId)|$($playback.PlaybackStatus)"
 }
 """
+
+# Takes AppId/Action as real script parameters (param() block), never
+# string-interpolated into the script's own source text - so a caller
+# passing an untrusted app id or action (this tool's `app` argument
+# ultimately comes from a model's tool call) can never be interpreted as
+# PowerShell code, only ever compared as a plain string value. Same
+# "constrain the shape, don't trust the content" reasoning as every other
+# externally-sourced value flowing into a shell-adjacent call in this
+# codebase (e.g. tools/shell.py's whitelist).
+_CONTROL_SCRIPT = r"""
+param(
+    [string]$AppId,
+    [string]$Action
+)
+""" + _PS_PREAMBLE + r"""
+$target = $manager.GetSessions() | Where-Object { $_.SourceAppUserModelId -eq $AppId } | Select-Object -First 1
+if (-not $target) {
+    Write-Output "NOTFOUND"
+    exit
+}
+switch ($Action) {
+    "play"     { $ok = Await ($target.TryPlayAsync()) ([bool]) }
+    "pause"    { $ok = Await ($target.TryPauseAsync()) ([bool]) }
+    "next"     { $ok = Await ($target.TrySkipNextAsync()) ([bool]) }
+    "previous" { $ok = Await ($target.TrySkipPreviousAsync()) ([bool]) }
+    default    { Write-Output "BADACTION"; exit }
+}
+Write-Output "OK:$ok"
+"""
+
+CONTROL_ACTIONS = ("play", "pause", "next", "previous")
 
 
 def current_session(timeout_s: float = 10.0) -> tuple[str | None, str]:
@@ -105,3 +138,47 @@ def all_sessions(timeout_s: float = 10.0) -> dict[str, str]:
         if app_id:
             sessions[app_id] = status
     return sessions
+
+
+def control_session(app_id: str, action: str, timeout_s: float = 10.0) -> tuple[bool, str]:
+    """Calls `action` directly on app_id's own SMTC session
+    (TryPlayAsync/TryPauseAsync/TrySkipNextAsync/TrySkipPreviousAsync) - no
+    routing ambiguity at all, unlike a raw hardware media key
+    (tools/media_keys.py), because this targets one specific session
+    object by identity rather than sending a keypress Windows itself
+    decides where to route.
+
+    Returns (ok, detail). ok is True only when the session was found AND
+    its own Try*Async call reported success - these calls can legitimately
+    fail (not every app implements every control), so finding a matching
+    session is not itself proof the action succeeded.
+
+    Writes _CONTROL_SCRIPT to a real temp file and invokes it with -File
+    plus separate -AppId/-Action parameters, not a -Command string built
+    from interpolating those values - see _CONTROL_SCRIPT's own comment
+    for why."""
+    if action not in CONTROL_ACTIONS:
+        return False, f"unknown action {action!r} - valid: {', '.join(CONTROL_ACTIONS)}"
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".ps1", delete=False, encoding="utf-8") as f:
+        f.write(_CONTROL_SCRIPT)
+        script_path = f.name
+
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-ExecutionPolicy", "Bypass", "-File", script_path, "-AppId", app_id, "-Action", action],
+            capture_output=True, text=True, timeout=timeout_s,
+        )
+    finally:
+        Path(script_path).unlink(missing_ok=True)
+
+    output = result.stdout.strip()
+    if output == "NOTFOUND":
+        return False, f"no active session found for {app_id!r}"
+    if output == "BADACTION":
+        return False, f"unrecognized action {action!r}"
+    if output.startswith("OK:"):
+        ok = output[3:].strip().lower() == "true"
+        return ok, ("succeeded" if ok else "the app reported it could not perform this action")
+    stderr = result.stderr.strip()
+    return False, f"unexpected output: {output!r}" + (f" (stderr: {stderr})" if stderr else "")
