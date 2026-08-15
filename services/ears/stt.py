@@ -55,8 +55,7 @@ class Transcriber:
         self._model = WhisperModel(model_name, device=device, compute_type=compute_type)
         self._language = language
 
-    def transcribe(self, audio: np.ndarray) -> Transcript:
-        """audio: mono float32 PCM at the model's expected 16kHz sample rate."""
+    def _run(self, audio) -> Transcript:
         start = time.perf_counter()
         segments = list(self._model.transcribe(audio, language=self._language)[0])
         text = "".join(segment.text for segment in segments).strip()
@@ -67,3 +66,18 @@ class Transcriber:
         else:
             avg_logprob, no_speech_prob = 0.0, 1.0
         return Transcript(text=text, latency_ms=latency_ms, avg_logprob=avg_logprob, no_speech_prob=no_speech_prob)
+
+    def transcribe(self, audio: np.ndarray) -> Transcript:
+        """audio: mono float32 PCM at the model's expected 16kHz sample rate."""
+        return self._run(audio)
+
+    def transcribe_file(self, path: str) -> Transcript:
+        """PROMPTS.md A23 - points this same Transcriber at an arbitrary
+        audio or video file instead of a live mic buffer. Passes the path
+        straight to faster-whisper's own transcribe() rather than
+        pre-decoding to PCM ourselves - the underlying WhisperModel already
+        accepts a str/Path directly and decodes it via its own bundled
+        audio pipeline (PyAV), handling format conversion and video-file
+        audio extraction alike, so there's no reason to duplicate that
+        here."""
+        return self._run(path)

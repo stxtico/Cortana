@@ -363,6 +363,26 @@ max_result_chars = 3000
 # model decides mid-turn.
 ask_user_max_per_turn = 1
 
+[tools.search_content]
+# PROMPTS.md A23 - tools/search_content.py. Files larger than this are
+# skipped outright, not scanned - a stray large file in a whitelisted
+# directory (a render, a log dump) shouldn't make one search call slow.
+max_file_size_bytes = 5_000_000
+# Cap on total matches returned across every whitelisted directory searched
+# - same "bound the result, don't flood the model" reasoning as
+# [tools].max_result_chars, applied before that generic char cap even sees
+# the result.
+max_results = 50
+
+[tools.process_list]
+# PROMPTS.md A23 - tools/process_list.py. psutil's cpu_percent() needs a
+# real elapsed interval between two calls to report a meaningful number
+# (its first call per process is always 0.0, having nothing to compare
+# against yet) - this is that interval. Short enough not to feel slow on a
+# single tool call, long enough to sample a real CPU delta rather than
+# noise.
+sample_interval_s = 0.3
+
 [tools.web_search]
 # "tavily" (needs TAVILY_API_KEY in .env - see .env.example) or "searxng"
 # (self-hosted, zero external calls/keys - point searxng_endpoint at a real

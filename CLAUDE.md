@@ -6,10 +6,10 @@ and rationale — this file is the operating summary.
 ## Current state
 
 **Phase:** 8 — The character (A15 done, holographic shader follow-up done); A18
-(computer use), A19 (marketing pipeline), A20 (attribution loop), A21 (delegation), and
-A22 (grounding upgrade + screen awareness, all four steps) have all run ahead of the
-documented order, per explicit instruction each time. A16/A17 (camera/ambient awareness)
-are the next fully-untouched phase.
+(computer use), A19 (marketing pipeline), A20 (attribution loop), A21 (delegation), A22
+(grounding upgrade + screen awareness, all four steps), and A23 (tool wave 1, the system
+layer) have all run ahead of the documented order, per explicit instruction each time.
+A16/A17 (camera/ambient awareness) are the next fully-untouched phase.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -162,9 +162,32 @@ A8's tool-calling demands first, see Done below)
   privacy rail (checked before any capture) but ships empty — it does nothing until
   populated with real password-manager/banking window titles.
   [docs/history/A22.md](docs/history/A22.md)
+- **A23** — Tool wave 1, the system layer: `notify`, `media_keys`, `clipboard_read`/
+  `clipboard_write`, `process_list`, `window_list`, `search_content`, `transcribe_media`,
+  `capability_list` (28 tools now registered total). Live-testing `notify` caught the exact
+  failure shape flagged going in — a toast call returned cleanly with no exception, but a
+  real screenshot showed nothing appeared; tested against a genuinely registered AUMID to
+  rule out app-registration before finding the real cause in the registry
+  (`ToastEnabled = 0` — Windows notifications disabled system-wide on this machine, left for
+  the user to flip, not this session's call). `notify` and the daemon's new toast path both
+  now report/fall back to the honest state instead of silently succeeding or dropping the
+  message. `media_keys` verification pivoted from screenshots (Spotify's own UI turned out
+  chrome-less, no persistent transport bar to diff, plus a separate real `ImageGrab` bug
+  with negative-origin window rects on this dual-monitor layout) to the actually-correct
+  signal — Windows' own System Media Transport Controls API — confirming a real
+  `Playing` → `Paused` → `Playing` round trip. `transcribe_media` added
+  `Transcriber.transcribe_file()` to `services/ears/stt.py` and live-transcribed a real voice
+  reference recording accurately. `capability_list` reports three states (available/
+  gated-behind-confirmation/dormant-with-a-reason) sourced from the live 28-tool registry and
+  each tool's own `is_available()`, never a hand-maintained list — per explicit instruction
+  after the user flagged that a naive "what can you do" list would be actively misleading
+  with half these tools dormant or gated. `TOOL_CATALOG.md`, referenced by `PLAN.md`/
+  `PROMPTS.md`, still doesn't exist in the repo — flagged, not fabricated; the user said
+  they'd add it separately. `[tools.screen].excluded_windows` (A22) is still empty.
+  [docs/history/A23.md](docs/history/A23.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
-after A22 wraps. A5b
+after A22/A23 wrap. A5b
 (latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to
 get actual `load_duration`/`prompt_eval_duration` numbers for genuine live-pipeline

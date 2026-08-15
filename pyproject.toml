@@ -26,6 +26,7 @@ dependencies = [
     "torch>=2.13.0",
     "trafilatura>=2.2.0",
     "transformers>=4.57,<5.1",
+    "winotify>=1.1.0",
 ]
 
 [tool.uv.sources]
