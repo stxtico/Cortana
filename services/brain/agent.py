@@ -67,6 +67,7 @@ from tools import (
     export_stl,
     fetch_url,
     find_file,
+    freecad,
     list_dir,
     media_control,
     media_keys,
@@ -146,6 +147,7 @@ _ALL_TOOLS = {
     "cad_generate": cad,
     "export_step": export_step,
     "export_stl": export_stl,
+    "freecad": freecad,
     "computer": computer,
     "look_at_screen": screen,
     "delegate_task": delegate_task,
@@ -192,7 +194,7 @@ def _log(record: dict) -> None:
 
 async def _drop_unavailable_tools(tools: dict) -> dict:
     """Live-checks every tool exposing is_available() (web_search, shell,
-    calendar_read, email_read, email_draft, ocr) and drops it from the offered set if it
+    calendar_read, email_read, email_draft, ocr, freecad) and drops it from the offered set if it
     returns False - offering a tool that can only fail wastes a turn on a
     guaranteed error instead of the model just not seeing it. Checked fresh
     every run_agent() call, not cached, so each starts working automatically

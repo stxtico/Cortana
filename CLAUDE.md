@@ -8,9 +8,10 @@ and rationale — this file is the operating summary.
 **Phase:** 8 — The character (A15 done, holographic shader follow-up done); A18
 (computer use), A19 (marketing pipeline), A20 (attribution loop), A21 (delegation), A22
 (grounding upgrade + screen awareness, all four steps), A23 (tool wave 1, the system
-layer), A24 (tool wave 2, deliverables), and A25 (default-allow computer use) have all
-run ahead of the documented order, per explicit instruction each time. A16/A17
-(camera/ambient awareness) are the next fully-untouched phase.
+layer), A24 (tool wave 2, deliverables), A25 (default-allow computer use), and A26
+(FreeCAD scripting) have all run ahead of the documented order, per explicit
+instruction each time. A16/A17 (camera/ambient awareness) are the next fully-untouched
+phase.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -320,6 +321,44 @@ A8's tool-calling demands first, see Done below)
   size was consistent with the character count read earlier in the same session — nothing was
   lost, but the mistake (wrong assumption about process/window ownership) was real.
   [docs/history/A25.md](docs/history/A25.md)
+- **A26** — FreeCAD scripting: a `freecad` tool that sends Python to an already-running
+  FreeCAD GUI instance via a small, self-owned XML-RPC bridge
+  (`scripts/freecad_rpc_bootstrap.py`, pasted into FreeCAD's own Python console once per
+  session; `tools/_freecad.py` client + `tools/freecad.py`). Transport decision, asked for
+  explicitly: FreeCAD exposes a console command file (no live-execution trigger for an
+  already-open GUI exists), `import FreeCAD` from an external process (a separate,
+  disconnected session — never the open GUI), or a socket/RPC server started from inside the
+  running process (the only one that satisfies "already-running instance executes code and
+  shows the result live"). Picked the third, built self-owned rather than depending on an
+  unverifiable third-party FreeCAD RPC addon — same "own small transport code end to end"
+  precedent as A23's `media_control`. What it can't do, stated plainly: doesn't survive
+  closing FreeCAD (re-run the bootstrap after every launch), localhost only, and FreeCAD's Qt
+  GUI isn't thread-safe from the RPC server's own listener thread — handled with a
+  QTimer-polled queue marshaling every call onto FreeCAD's main thread, not decoration.
+  `render_part` loads an already-generated, already-verified part into the live document via
+  FreeCAD's own `Part.insert()` STEP importer — deliberately not regenerated through
+  FreeCAD's native Part/Sketcher API, which would be a second geometry path that could
+  diverge from what `verify_solid()` (A14) actually measured; reuses
+  `tools/_cad_export_common.py`'s lookup/export, the same code `export_step.py` already
+  uses. `run_python` sends arbitrary code through, confirmation-gated like `tools/shell.py`;
+  `render_part` isn't, no more consequential than `export_step.py`'s own unconfirmed write.
+  FreeCAD isn't installed on this machine — built real and self-gating per explicit
+  instruction (`winget install --id FreeCAD.FreeCAD`), same standard A24 held OCR to before
+  Tesseract landed. Everything genuinely testable without FreeCAD was tested live: a real
+  stand-in XML-RPC server (plain Python, same `ping()`/`run_code()` protocol) exercised the
+  actual registered tool end to end and caught a real bug — the generated snippet's first
+  draft opened with `import FreeCAD, Part`, redundant against the pre-seeded exec()
+  namespace both the bootstrap and the stand-in already provide, and it broke outright
+  against the stand-in (no real `FreeCAD` module on this machine's path) — fixed by trusting
+  the documented pre-seeded-namespace contract instead. `render_part` against the real,
+  already-verified `cad/verified/bracket` part was checked against actual recorded calls
+  from a behaviorally-real fake (not just "the snippet parses"), and the resulting STEP file
+  was re-imported independently via cadquery's own importer and confirmed to have positive
+  volume — a real solid, not corrupt. 10/10 checks passed. What's genuinely unverified,
+  stated plainly: the bootstrap script's own FreeCAD-specific calls (`Part.insert()`,
+  `FreeCADGui.activeView()`, the actual Qt threading behavior) — a best-effort first draft
+  against documented FreeCAD/Qt constraints, not a live-verified one.
+  [docs/history/A26.md](docs/history/A26.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b

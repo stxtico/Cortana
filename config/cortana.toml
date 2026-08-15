@@ -572,6 +572,25 @@ whitelist    = ["ls", "cat", "echo", "pwd", "date", "df", "whoami", "wc"]
 sandbox_cwd  = "/root"
 timeout_s    = 15
 
+[tools.freecad]
+# PROMPTS.md A26 - tools/freecad.py talks to scripts/freecad_rpc_bootstrap.py,
+# pasted into an already-running FreeCAD's own Python console (View > Panels
+# > Python console) once per FreeCAD session - see that script's docstring
+# for the transport decision (a socket/RPC bridge started from inside the
+# GUI process, not a console command file or a separate `import FreeCAD`
+# process - only this lets an already-open instance execute code and show
+# the result live) and what it can't do.
+#
+# FreeCAD isn't installed on this machine as of A26 - install it yourself
+# (system-level install, same "stays on the user's side" precedent as
+# WSL2/ffmpeg/Tesseract/CDP-Chrome):
+#   winget install --id FreeCAD.FreeCAD
+# Then, with FreeCAD open: View > Panels > Python console, paste in
+# scripts/freecad_rpc_bootstrap.py's contents (or run it as a macro), once
+# per FreeCAD session - it doesn't persist across closing FreeCAD.
+rpc_host = "localhost"
+rpc_port = 9875
+
 [cad]
 # tools/cad.py (PROMPTS.md A14) - generate -> execute -> validate -> render
 # -> vision-compare -> revise, reusing scripts/_cad_common.py's executor

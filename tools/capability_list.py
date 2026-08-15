@@ -50,6 +50,7 @@ _DORMANT_REASONS = {
     "email_read": "Outlook isn't currently running - same reason as calendar_read",
     "email_draft": "Outlook isn't currently running - same reason as calendar_read",
     "ocr": "Tesseract isn't installed on this machine (winget install --id UB-Mannheim.TesseractOCR)",
+    "freecad": "FreeCAD isn't installed (winget install --id FreeCAD.FreeCAD), or it's running but the cortana RPC bridge hasn't been pasted into its Python console yet this session (scripts/freecad_rpc_bootstrap.py - View > Panels > Python console in FreeCAD)",
 }
 _DEFAULT_DORMANT_REASON = "a dependency this tool needs isn't currently available"
 
