@@ -7,9 +7,9 @@ and rationale — this file is the operating summary.
 
 **Phase:** 8 — The character (A15 done, holographic shader follow-up done); A18
 (computer use), A19 (marketing pipeline), A20 (attribution loop), A21 (delegation), and
-A22 Steps 1-3 (grounding upgrade) have all run ahead of the documented order, per explicit
-instruction each time. A22 Step 4 (screen awareness) in progress next; A16/A17
-(camera/ambient awareness) are the next fully-untouched phase after that.
+A22 (grounding upgrade + screen awareness, all four steps) have all run ahead of the
+documented order, per explicit instruction each time. A16/A17 (camera/ambient awareness)
+are the next fully-untouched phase.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -116,7 +116,7 @@ A8's tool-calling demands first, see Done below)
   below) — takes down a worker's entire OS process tree (confirmed against 24 real PIDs
   including 8 live `chrome-headless-shell.exe`), not just the top-level PID.
   [docs/history/A21.md](docs/history/A21.md)
-- **A22 Steps 1-3** — Grounding upgrade (Step 4, read-only screen awareness, not started).
+- **A22** — Grounding upgrade + screen awareness, all four steps done.
   Step 1 benchmarked GTA1-7B vs Holo2-8B on a real 33-target set built from this machine's
   own apps (not published ScreenSpot-Pro numbers) — GTA1-7B won decisively (81.8% vs
   51.5%), inverting the published ranking (Holo2 58.9% vs GTA1 50.1%), the clearest
@@ -146,11 +146,24 @@ A8's tool-calling demands first, see Done below)
   `resolve()` signature had already been rewritten (uncommitted, pre-dating this session)
   to a two-stage `(grounding_model, description_model, description, hwnd)` shape, but
   `tools/computer.py` was still calling it with the old two-argument shape — the
-  pure-vision fallback tier was silently broken until this pass.
+  pure-vision fallback tier was silently broken until this pass. Both Step 2 and Step 3
+  were then live-verified on real actions, not just read-only checks: two real clicks
+  through `computer.py`'s full `execute()` path (a folder-opening double-click, a no-op
+  single-click) each correctly reported `changed`/`unchanged`. Step 2's own accuracy
+  claim was checked against a real baseline, on explicit instruction, before trusting it:
+  the same 12 descriptive targets run through the pure GTA1-7B grounder alone (no
+  set-of-mark) scored 4/12 vs set-of-mark's 6/12 — set-of-mark wins and stays, though the
+  win isn't uniform (VS Code 3/6 vs 0/6, but Chrome's sparser UI actually favored the pure
+  grounder 4/6 vs 3/6, including the one target — a username — set-of-mark structurally
+  can't attempt at all). Step 4 (`tools/screen.py`'s new `look_at_screen` tool) adds the
+  read-only counterpart to `computer.py`: UIA-exact text first, a `[models].vision` call
+  second for what UIA can't express, attribution baked into the returned string rather
+  than trusted to the calling model's wording. `[tools.screen].excluded_windows` is a real
+  privacy rail (checked before any capture) but ships empty — it does nothing until
+  populated with real password-manager/banking window titles.
   [docs/history/A22.md](docs/history/A22.md)
 
-**Next**: A22 Step 4 (read-only screen awareness) — per explicit instruction, worked ahead
-of A16/A17 (camera/ambient awareness), which are still the next fully-untouched phase
+**Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22 wraps. A5b
 (latency, specifically the LLM TTFT residual) is still open but deliberately
 paused, not abandoned - re-run `latency_report.py` after a real live session to

@@ -445,6 +445,24 @@ diff_radius = 60
 # measures a small nonzero diff even when nothing actually happened.
 diff_threshold = 8.0
 
+[tools.screen]
+# PROMPTS.md A22 Step 4 - tools/screen.py's look_at_screen, the read-only
+# counterpart to [tools.computer]. Case-insensitive substrings matched
+# against a window's title before ANY capture (UIA text or screenshot) - a
+# match refuses the whole call outright. Empty by default, same bootstrap
+# reasoning as [tools].write_whitelist_dirs above: this project doesn't
+# guess at which password manager or banking app a given install actually
+# uses. This is a real privacy rail, not a decorative default - add your
+# own password manager's window title (e.g. "1Password", "Bitwarden",
+# "KeePass") and your bank's browser tab title before relying on this
+# feature, not after.
+excluded_windows = []
+# Cap on how many distinct accessible-text strings look_at_screen gathers
+# from one window's UIA tree - bounds gather time on a very large/deep
+# window (same reasoning as tools/_computer_uia.py's find_candidates()
+# max_results), not a limit expected to bind on ordinary UIs.
+max_text_items = 150
+
 [tools.shell]
 # PROMPTS.md A9 - runs a whitelisted command inside a DEDICATED, isolated WSL2
 # distro (tools/shell.py), never the Windows host directly and never the
