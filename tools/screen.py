@@ -1,18 +1,26 @@
-"""look_at_screen (PROMPTS.md A22 Step 4) - the read-only counterpart to
-tools/computer.py: she can answer questions about what's on screen without
-acting on it. Same tiering discipline as computer.py's resolution path -
-prefer the accessibility tree for anything structured (window titles,
-control names, visible text are exact via UIA; asking a vision model to
-read them is strictly worse), vision handles what UIA can't express (layout,
-images, "what does this look like"). Both signals are gathered every call
-(this is an on-request tool, not a per-turn cost) and returned with their
-attribution baked directly into the string, not left to the calling model to
-get right - the same "constrain the shape, don't trust the wording" reasoning
-CLAUDE.md's documented ~2/3 instruction-following ceiling makes necessary
-everywhere else in this codebase (A5a, A18's find_file). UIA-sourced content
-is stated as fact ("reads:"); vision-sourced content is explicitly hedged
+"""look_at_screen (PROMPTS.md A22 Step 4, OCR tier added A24) - the
+read-only counterpart to tools/computer.py: she can answer questions about
+what's on screen without acting on it. Same tiering discipline as
+computer.py's resolution path - prefer the accessibility tree for anything
+structured (window titles, control names, visible text are exact via UIA),
+OCR next for on-screen text UIA's tree doesn't expose (text baked into an
+image - a screenshot inside a screenshot, a rendered PDF, a game/canvas UI),
+vision last for what neither can express (layout, images, "what does this
+look like"). Asking a vision model to transcribe text it can already get
+exactly from UIA or OCR is strictly worse - it's a measured fabrication risk
+(CLAUDE.md's Known model limitations), not just a redundant call. All
+signals that are actually available are gathered every call (this is an
+on-request tool, not a per-turn cost) and returned with their attribution
+baked directly into the string, not left to the calling model to get right -
+the same "constrain the shape, don't trust the wording" reasoning CLAUDE.md's
+documented ~2/3 instruction-following ceiling makes necessary everywhere else
+in this codebase (A5a, A18's find_file). UIA- and OCR-sourced content are
+both stated as fact ("reads:"); vision-sourced content is explicitly hedged
 ("it looks like...") - PROMPTS.md's own instruction, "confidence is
-uncorrelated with accuracy here."
+uncorrelated with accuracy here." OCR is gated on tools/_ocr.py's
+is_available() (Tesseract genuinely reachable, not just the package
+importing) - dormant until installed, silently omitted from the response
+rather than attempted and failing.
 
 No REQUIRES_CONFIRMATION - a pure read, same as read_file/list_dir/
 fetch_url/web_search (CLAUDE.md rule 4: confirmation gates actions that
@@ -47,14 +55,17 @@ import win32gui
 from PIL import ImageGrab
 
 from services.brain import client as brain_client
-from tools import _computer_uia
+from tools import _computer_uia, _ocr
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
 
 _VISION_PROMPT = (
     "Answer this question about what's visible in the screenshot, in one or two sentences: {question}\n"
-    "Describe only what you can actually see - don't guess at text you can't clearly read."
+    "Exact on-screen text is already captured separately (accessibility tree and/or OCR) - "
+    "focus on layout, visuals, and anything text extraction can't express, rather than "
+    "trying to transcribe text yourself. Describe only what you can actually see - don't "
+    "guess at anything you can't clearly make out."
 )
 
 
@@ -132,16 +143,19 @@ def _gather_uia_text(hwnd: int, max_items: int) -> list[str]:
     return texts
 
 
-def _capture_region_b64(hwnd: int) -> str:
-    """In-memory only - PNG bytes base64-encoded for the Ollama images field,
-    never written to a file. Falls back to the full virtual desktop if the
-    window rect is degenerate, same fallback tools/_computer_vision.py's own
-    _capture_screenshot_b64() uses."""
+def _capture_region(hwnd: int) -> "ImageGrab.Image":
+    """In-memory only - never written to a file, same rule this whole module
+    already follows. Falls back to the full virtual desktop if the window
+    rect is degenerate, same fallback tools/_computer_vision.py's own
+    _capture_screenshot_b64() uses. Captured once per call and reused for
+    both OCR and vision below, not captured twice."""
     rect = win32gui.GetWindowRect(hwnd)
     if rect[2] > rect[0] and rect[3] > rect[1]:
-        img = ImageGrab.grab(bbox=rect)
-    else:
-        img = ImageGrab.grab(all_screens=True)
+        return ImageGrab.grab(bbox=rect)
+    return ImageGrab.grab(all_screens=True)
+
+
+def _image_to_b64(img) -> str:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("ascii")
@@ -163,10 +177,26 @@ async def execute(question: str, app: str | None = None) -> str:
     uia_texts = _gather_uia_text(hwnd, max_items)
 
     vision_model = _load_config().get("models", {}).get("vision", "")
-    vision_description = ""
-    if vision_model:
+    ocr_available = await _ocr.is_available()
+
+    image = None
+    if vision_model or ocr_available:
+        image = _capture_region(hwnd)
+
+    ocr_text = ""
+    if ocr_available and image is not None:
         try:
-            image_b64 = _capture_region_b64(hwnd)
+            ocr_text = _ocr.extract_text(image)
+        except Exception as exc:
+            ocr_text = ""
+            ocr_error = f"(OCR unavailable: {exc})"
+        else:
+            ocr_error = ""
+
+    vision_description = ""
+    if vision_model and image is not None:
+        try:
+            image_b64 = _image_to_b64(image)
             messages = [{"role": "user", "content": _VISION_PROMPT.format(question=question), "images": [image_b64]}]
             raw = ""
             async for token in brain_client.stream(messages, model=vision_model):
@@ -181,6 +211,11 @@ async def execute(question: str, app: str | None = None) -> str:
         lines.extend(f"  - {t!r}" for t in uia_texts)
     else:
         lines.append("On-screen text: none readable via the accessibility tree for this window.")
+    if ocr_available:
+        if ocr_text:
+            lines.append(f"\nOn-screen text (exact, via OCR - catches text baked into the image that the accessibility tree doesn't expose):\n  {ocr_text}")
+        elif ocr_error:
+            lines.append(f"\n{ocr_error}")
     if vision_description:
         lines.append(f"\nVisual description (a vision model's impression, not exact - treat as \"it looks like...\", not \"it says...\"): {vision_description}")
 

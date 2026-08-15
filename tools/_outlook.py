@@ -58,3 +58,12 @@ def get_namespace():
     import win32com.client
     outlook = win32com.client.GetActiveObject("Outlook.Application")
     return outlook.GetNamespace("MAPI")
+
+
+def get_application():
+    """The Application COM object itself (CreateItem() lives here, not on
+    the namespace) - email_draft.py needs this, calendar_read.py/
+    email_read.py don't. Same GetActiveObject-only guarantee as
+    get_namespace() above - never Dispatch, never launches Outlook."""
+    import win32com.client
+    return win32com.client.GetActiveObject("Outlook.Application")

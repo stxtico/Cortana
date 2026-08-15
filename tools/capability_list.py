@@ -33,6 +33,8 @@ _DORMANT_REASONS = {
     "shell": "the isolated CortanaShell WSL2 distro doesn't exist on this machine yet, or its automount isn't disabled (see CLAUDE.md's A9 entry)",
     "calendar_read": "Outlook isn't currently running - this reads via a live COM connection to an already-running Outlook, never launching it itself (CLAUDE.md rule 10)",
     "email_read": "Outlook isn't currently running - same reason as calendar_read",
+    "email_draft": "Outlook isn't currently running - same reason as calendar_read",
+    "ocr": "Tesseract isn't installed on this machine (winget install --id UB-Mannheim.TesseractOCR)",
 }
 _DEFAULT_DORMANT_REASON = "a dependency this tool needs isn't currently available"
 

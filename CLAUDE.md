@@ -7,9 +7,10 @@ and rationale — this file is the operating summary.
 
 **Phase:** 8 — The character (A15 done, holographic shader follow-up done); A18
 (computer use), A19 (marketing pipeline), A20 (attribution loop), A21 (delegation), A22
-(grounding upgrade + screen awareness, all four steps), and A23 (tool wave 1, the system
-layer) have all run ahead of the documented order, per explicit instruction each time.
-A16/A17 (camera/ambient awareness) are the next fully-untouched phase.
+(grounding upgrade + screen awareness, all four steps), A23 (tool wave 1, the system
+layer), and A24 (tool wave 2, deliverables) have all run ahead of the documented order,
+per explicit instruction each time. A16/A17 (camera/ambient awareness) are the next
+fully-untouched phase.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -209,6 +210,40 @@ A8's tool-calling demands first, see Done below)
   `PROMPTS.md`, still doesn't exist in the repo — flagged, not fabricated; the user said
   they'd add it separately. `[tools.screen].excluded_windows` (A22) is still empty.
   [docs/history/A23.md](docs/history/A23.md)
+- **A24** — Tool wave 2, deliverables: `write_docx`, `write_xlsx`, `write_pptx`,
+  `write_pdf`, `pdf_read`, `ocr`, `email_draft`, `copy`/`move`/`rename`/`delete` (12 tools;
+  40 registered total). The four writers already existed on disk from a prior session's
+  `save` commit (deps, config, and the files themselves) but were never wired into
+  `services/brain/agent.py`'s dispatcher — found and closed that gap first, then built the
+  remaining eight. No Office install on this machine, so every writer was verified
+  externally instead of by eye: re-opened each output with the library that wrote it
+  (`python-docx`/`openpyxl`/`python-pptx`) and diffed content, validated docx/xlsx/pptx as
+  real zip containers, and checked `write_pdf` via this session's own `pdf_read` (reportlab
+  has no reader) — 18/18 checks passed. `ocr` (`tools/_ocr.py`) is built and self-gating on
+  Tesseract genuinely being callable (`pytesseract.get_tesseract_version()`, not just the
+  package importing — confirmed live that the import alone succeeds with zero Tesseract
+  installed) but not live-verified: Tesseract isn't installed on this machine
+  (`winget install --id UB-Mannheim.TesseractOCR` to activate). Per explicit instruction,
+  `ocr` never falls back to the vision model when unavailable — a confident wrong
+  transcription from a tier already measured fabricating is worse than an honest gap.
+  Wired into `tools/screen.py`'s `look_at_screen` as a third tier between UIA (exact,
+  accessibility tree) and vision (interpretive, last resort) — OCR reads text baked into
+  the pixels themselves (a screenshot-in-a-screenshot, a rendered PDF, a canvas UI) that
+  UIA's tree can't see; vision's prompt now explicitly defers text transcription to
+  UIA/OCR. `email_draft` reuses `tools/_outlook.py`'s existing non-launching
+  `is_available()` and adds a new `get_application()` helper (`CreateItem()` lives on the
+  Application object, not the namespace `calendar_read`/`email_read` already use) — only
+  ever calls `.Save()`, no `.Send()` path exists in the module at all. Dormant right now
+  (Outlook isn't running in this session), same as `calendar_read`/`email_read`.
+  `copy`/`move`/`rename`/`delete` all resolve through `tools/_fs.py`'s existing
+  `write_whitelist_dirs`, no second path check invented; `delete` uses `send2trash`, never
+  `unlink`. Live-verified against real files in `deliverables/`, checking actual filesystem
+  state, not the tools' own return strings — `delete`'s check needed a second look: the
+  Windows recycle bin's `Shell.Application` namespace strips file extensions from display
+  names, which false-failed the first version of that check (a bug in the check, not the
+  tool) before confirming the file was genuinely recoverable, not permanently unlinked.
+  11/11 checks passed. `capability_list`'s `_DORMANT_REASONS` extended for `email_draft`
+  and `ocr`. [docs/history/A24.md](docs/history/A24.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b

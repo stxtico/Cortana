@@ -58,7 +58,10 @@ from tools import (
     clipboard_read,
     clipboard_write,
     computer,
+    copy,
     delegate_task,
+    delete,
+    email_draft,
     email_read,
     export_step,
     export_stl,
@@ -67,9 +70,13 @@ from tools import (
     list_dir,
     media_control,
     media_keys,
+    move,
     notify,
+    ocr,
+    pdf_read,
     process_list,
     read_file,
+    rename,
     screen,
     search_content,
     set_timer,
@@ -78,7 +85,11 @@ from tools import (
     transcribe_media,
     web_search,
     window_list,
+    write_docx,
     write_file,
+    write_pdf,
+    write_pptx,
+    write_xlsx,
 )
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -113,12 +124,23 @@ _ALL_TOOLS = {
     "web_search": web_search,
     "fetch_url": fetch_url,
     "read_file": read_file,
+    "pdf_read": pdf_read,
+    "ocr": ocr,
     "list_dir": list_dir,
     "find_file": find_file,
     "write_file": write_file,
+    "copy": copy,
+    "move": move,
+    "rename": rename,
+    "delete": delete,
+    "write_docx": write_docx,
+    "write_xlsx": write_xlsx,
+    "write_pptx": write_pptx,
+    "write_pdf": write_pdf,
     "shell": shell,
     "calendar_read": calendar_read,
     "email_read": email_read,
+    "email_draft": email_draft,
     "ask_user": ask_user,
     "set_timer": set_timer,
     "cad_generate": cad,
@@ -170,7 +192,7 @@ def _log(record: dict) -> None:
 
 async def _drop_unavailable_tools(tools: dict) -> dict:
     """Live-checks every tool exposing is_available() (web_search, shell,
-    calendar_read, email_read) and drops it from the offered set if it
+    calendar_read, email_read, email_draft, ocr) and drops it from the offered set if it
     returns False - offering a tool that can only fail wastes a turn on a
     guaranteed error instead of the model just not seeing it. Checked fresh
     every run_agent() call, not cached, so each starts working automatically
