@@ -400,6 +400,24 @@ max_file_size_bytes = 5_000_000
 # the result.
 max_results = 50
 
+[tools.fetch_url]
+# PROMPTS.md A27 - tools/fetch_url.py's backend, same config-driven
+# backend-swap pattern as [voice].engine/[tools.web_search].backend.
+# "auto" (default) - trafilatura first, Crawl4AI (a real headless browser)
+# only as a fallback when trafilatura's result comes back empty or under
+# auto_fallback_min_chars. Decided by measurement, not assumption - see
+# tools/fetch_url.py's own docstring for the real numbers this session
+# measured on real pages: trafilatura 0.1-1s vs Crawl4AI 1-4s on the SAME
+# pages (several times slower, a real cost - Crawl4AI launches a real
+# headless Chromium per fetch), and trafilatura was also the cleaner
+# extraction whenever it worked at all. The one case Crawl4AI is
+# decisively better at - a page whose content is rendered client-side -
+# is exactly the case a thin/empty trafilatura result already signals,
+# so "auto" pays browser cost only where it's actually needed.
+# "trafilatura" or "crawl4ai" force one backend unconditionally.
+backend = "auto"
+auto_fallback_min_chars = 200
+
 [tools.process_list]
 # PROMPTS.md A23 - tools/process_list.py. psutil's cpu_percent() needs a
 # real elapsed interval between two calls to report a meaningful number

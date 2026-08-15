@@ -8,9 +8,11 @@ and rationale — this file is the operating summary.
 **Phase:** 8 — The character (A15 done, holographic shader follow-up done); A18
 (computer use), A19 (marketing pipeline), A20 (attribution loop), A21 (delegation), A22
 (grounding upgrade + screen awareness, all four steps), A23 (tool wave 1, the system
-layer), A24 (tool wave 2, deliverables), A25 (default-allow computer use), and A26
-(FreeCAD scripting) have all run ahead of the documented order, per explicit
-instruction each time. A16/A17 (camera/ambient awareness) are the next fully-untouched
+layer), A24 (tool wave 2, deliverables), A25 (default-allow computer use), A26
+(FreeCAD scripting), and A27 (Crawl4AI) have all run ahead of the documented order,
+per explicit instruction each time — that closes out TRACK A entirely; everything
+remaining in PROMPTS.md is TRACK B (requires the Spark) or A16/A17. A16/A17
+(camera/ambient awareness) are the next fully-untouched
 phase.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
@@ -359,6 +361,33 @@ A8's tool-calling demands first, see Done below)
   `FreeCADGui.activeView()`, the actual Qt threading behavior) — a best-effort first draft
   against documented FreeCAD/Qt constraints, not a live-verified one.
   [docs/history/A26.md](docs/history/A26.md)
+- **A27** — Crawl4AI: `fetch_url` gained a config-selectable backend
+  (`[tools.fetch_url].backend`) — `trafilatura` (unchanged), `crawl4ai`
+  (`tools/_crawl4ai.py`, a real headless browser via Playwright), or `auto` (the default:
+  trafilatura first, Crawl4AI only as a fallback when the result comes back empty or under
+  `auto_fallback_min_chars`, 200). Dependency pins checked before building against it, per
+  explicit instruction: `uv add crawl4ai` was purely additive (one new line in
+  `pyproject.toml`), numpy stayed at 2.4.6 (pin `<2.5`), transformers at 5.0.0 (pin `<5.1`),
+  torch/CUDA unaffected — verified directly, not assumed. Measured on real pages before
+  picking a default, also per explicit instruction: on two static pages both backends
+  extracted correctly, but trafilatura was both faster (0.2–1s vs 1–4s) **and** cleaner
+  (Crawl4AI's markdown carried more boilerplate even with `fit_markdown`'s
+  `PruningContentFilter`). On the case that actually matters — a page whose content
+  renders client-side (`quotes.toscrape.com/js/`) — trafilatura returned 29 chars of loading
+  shell (reads as a successful 200, missing the real content entirely); Crawl4AI returned
+  1663 correct chars in ~1s. That gap is what `auto` mode exploits: a thin trafilatura
+  result is itself the signal a page needs real JS rendering, so browser cost is paid only
+  where it's actually needed. `tools/_crawl4ai.py` launches a fresh browser per call rather
+  than holding one open — a deliberate exception to rule 7's usual persistent-instance
+  guidance, since a standing browser is real cost for an occasionally-called tool.
+  `logs/fetch_url.jsonl` (new) records which backend actually ran and whether a fallback
+  fired, same instrumentation discipline as A25's `computer_stats.py`. Live-tested against
+  the real, registered tool and verified externally — not the tool's own return: both the
+  static and JS-rendered fetches were checked against the real, known quote text on each
+  page, and the JS-page log confirmed the fallback genuinely fired
+  (`fallback_from_trafilatura_chars: 29`) and genuinely helped, not just that both backends
+  happened to return something non-empty. 5/5 checks passed. This closes out Track A.
+  [docs/history/A27.md](docs/history/A27.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b
