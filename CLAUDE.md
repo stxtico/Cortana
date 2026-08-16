@@ -388,6 +388,32 @@ A8's tool-calling demands first, see Done below)
   (`fallback_from_trafilatura_chars: 29`) and genuinely helped, not just that both backends
   happened to return something non-empty. 5/5 checks passed. This closes out Track A.
   [docs/history/A27.md](docs/history/A27.md)
+- **UI craft pass (ad hoc, not a PROMPTS.md phase)** — installed emilkowalski/skills
+  (`emil-design-eng`, `apple-design`, `animate`, and 7 more under `.agents/skills/`;
+  needed Node 22 via the existing nvm-windows install, invoked directly rather than
+  switching the machine's global active Node version) and used them for a craft pass on
+  the Electron control panel (`ui/index.html`/`style.css`/`renderer.ts`) — typography
+  (tabular-nums on every numeric readout, size-correct letter-spacing), a real spacing
+  scale, legibility-contrast bumps on muted text over the translucent/blurred background,
+  and motion scoped strictly to transitions/state changes (a sliding tab indicator,
+  button press feedback, badge state color transitions, a real collapse-out on memory
+  entry deletion) — explicitly never the log feed (appends many times a second) or the
+  latency numbers (update every turn), per direct instruction. Character layer
+  (`character.html`/`character_renderer.ts`/`character_hologram.ts`/`character_main.ts`/
+  `[ui.hologram]`) untouched, confirmed by diff. Checked constraint #3's premise
+  ("the panel now surfaces computer_stats/capability_list/worker status") against the
+  actual code before designing around it — `git log -- ui/` showed nothing touched since
+  A18, and none of those three are wired into the renderer/main/preload/types at all. The
+  user cut scope to the four existing tabs in response, explicitly as an **open design
+  question** (do those three belong in this panel at all, and if so how) rather than a
+  deferred task. Verified live: clean TypeScript build, drove the real app through all
+  three non-default tabs via `tools/computer.py`'s real UIA click (not mocked) and
+  screenshotted each. Found a real bug in the screenshot tooling itself, not the UI: on
+  this dual-monitor layout (a monitor left of the primary, negative win32 coordinates in
+  that region), cropping `PIL.ImageGrab.grab(all_screens=True)` with raw
+  `GetWindowRect()` values silently grabbed a different window (Spotify) instead of
+  erroring — fixed by subtracting `GetSystemMetrics(SM_XVIRTUALSCREEN/YVIRTUALSCREEN)`
+  before cropping. [docs/history/ui-craft-pass.md](docs/history/ui-craft-pass.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b

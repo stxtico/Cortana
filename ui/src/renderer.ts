@@ -34,15 +34,32 @@ window.cortana.onWindowState((state) => {
 });
 
 // ---- tabs ----
+// A28: sliding indicator instead of each button drawing its own static
+// underline - see style.css's #tab-indicator comment for why (spatial
+// consistency, occasional-only motion). Positioned in real button
+// coordinates (offsetLeft/offsetWidth), not guessed percentages, so it
+// still lines up if tab label widths ever change.
+const tabIndicator = document.getElementById("tab-indicator")!;
+
+function moveTabIndicator(btn: HTMLButtonElement): void {
+  tabIndicator.style.transform = `translateX(${btn.offsetLeft}px)`;
+  tabIndicator.style.width = `${btn.offsetWidth}px`;
+}
+
 document.querySelectorAll<HTMLButtonElement>(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
     document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
     btn.classList.add("active");
     document.getElementById(`tab-${btn.dataset.tab}`)!.classList.add("active");
+    moveTabIndicator(btn);
     if (btn.dataset.tab === "memory" && !memoryLoaded) loadMemorySessions();
   });
 });
+// Position the indicator under the default-active tab on load - without
+// this it starts at width 0 (invisible) until the first click.
+const initialTab = document.querySelector<HTMLButtonElement>(".tab-btn.active");
+if (initialTab) moveTabIndicator(initialTab);
 
 function appendRow(container: HTMLElement, el: HTMLElement): void {
   container.appendChild(el);
@@ -278,7 +295,22 @@ function renderEntryRow(e: { id: number; role: string; text: string }): HTMLElem
       window.alert(`Delete failed: ${result.error || "unknown error"}`);
       return;
     }
-    row.remove();
+    // A28: collapse-out (style.css's .entry-row.removing), not an instant
+    // remove() - a real, user-just-confirmed state change, not continuous
+    // data. Several properties transition together (opacity, transform,
+    // max-height, padding, margin, border-width) with different durations
+    // - wait for max-height's transitionend specifically (the longest),
+    // not just the first property to finish, or removal would cut the
+    // collapse short. { once: true } alone would detach on whichever
+    // property fires first, which isn't necessarily this one - the
+    // handler has to check propertyName itself and only then unsubscribe.
+    row.classList.add("removing");
+    const onTransitionEnd = (ev: TransitionEvent) => {
+      if (ev.propertyName !== "max-height") return;
+      row.removeEventListener("transitionend", onTransitionEnd);
+      row.remove();
+    };
+    row.addEventListener("transitionend", onTransitionEnd);
   });
 
   return row;

@@ -1,8 +1,21 @@
 /* Blue holographic instrumentation aesthetic (PROMPTS.md A12 visual
-   direction) - readouts, not a consumer app. --accent/--accent-rgb/
-   --panel-opacity/--blur-px are set at runtime from [ui] in cortana.toml
-   (renderer.ts applyUiConfig()) - defaults here only cover the instant
-   before that config round-trip lands. */
+   direction, craft pass A28) - readouts, not a consumer app. --accent/
+   --accent-rgb/--panel-opacity/--blur-px are set at runtime from [ui] in
+   cortana.toml (renderer.ts applyUiConfig()) - defaults here only cover
+   the instant before that config round-trip lands.
+
+   A28 (emilkowalski/skills: emil-design-eng, apple-design): a craft pass,
+   not a restyle - same holographic direction (frameless, translucent,
+   cyan accent, dark base), same 4 tabs, same information density. What
+   changed is typography (size-specific tracking, tabular numerals so
+   live digits don't jitter width), a real spacing scale instead of ad hoc
+   px, legibility contrast on muted text (apple-design's "vibrancy" rule:
+   flat gray over a translucent/blurred surface loses contrast fastest),
+   and motion reserved for transitions/state changes only - explicitly
+   NOT the log feed (updates many times a second) or the latency numbers
+   (update every turn). See tab/badge/entry-remove rules below for where
+   motion actually landed, and their comments for why each one earned its
+   place. */
 
 :root {
   --accent: #39e6ff;
@@ -10,6 +23,23 @@
   --panel-opacity: 0.82;
   --blur-px: 20px;
   --base-rgb: 6, 10, 16;
+
+  /* Spacing scale (A28) - replaces the ad hoc 6px/7px/9px/11px/14px mix
+     with a small deliberate set, so every gap is a multiple of one unit
+     instead of a slightly-different guess each time. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+
+  /* Custom easing (A28, emil-design-eng) - the built-in CSS easings are
+     too weak to read as intentional. ease-out for anything entering or
+     responding to input; ease-in-out for on-screen state morphs. Never
+     ease-in - it delays the start, which is the exact moment being
+     watched most closely. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
 }
 
 * { box-sizing: border-box; }
@@ -24,6 +54,7 @@ html, body {
 body {
   font-family: "Segoe UI", -apple-system, sans-serif;
   font-size: 13px;
+  line-height: 1.45; /* A28: comfortable leading for prose (conversation, hints) - dense list rows below tighten their own */
   color: #d3ecf5;
 }
 
@@ -46,7 +77,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 6px 0 14px;
+  padding: 0 var(--space-2) 0 var(--space-4);
   height: 38px;
   flex-shrink: 0;
   background: rgba(var(--accent-rgb), 0.06);
@@ -56,7 +87,7 @@ body {
 #titlebar-drag {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   flex: 1;
   min-width: 0;
 }
@@ -70,7 +101,7 @@ body {
 #titlebar-title {
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.12em; /* small text: positive tracking is correct (apple-design) - kept, it's the sci-fi-label identity, not a mistake */
   color: #bfe9f5;
   white-space: nowrap;
 }
@@ -79,7 +110,7 @@ body {
   -webkit-app-region: no-drag;
   display: flex;
   gap: 2px;
-  margin-left: 10px;
+  margin-left: var(--space-3);
 }
 
 .win-btn {
@@ -93,20 +124,31 @@ body {
   cursor: pointer;
   border-radius: 4px;
   line-height: 1;
+  transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out), transform 100ms var(--ease-out);
 }
 .win-btn:hover { background: rgba(var(--accent-rgb), 0.18); color: var(--accent); }
+/* A28: press feedback (emil-design-eng "buttons must feel responsive") -
+   a discrete click, not continuous data, so it's exactly the kind of
+   motion constraint #2 allows. Subtle on purpose (0.94, not 0.8) - these
+   are 26px window-chrome buttons, not primary actions. */
+.win-btn:active { transform: scale(0.94); }
 .win-btn-close:hover { background: #c0304a; color: #fff; }
 
 /* ---- model badge (big visible active-model indicator) ---- */
 .badge {
   -webkit-app-region: no-drag;
-  padding: 4px 12px;
+  padding: var(--space-1) var(--space-3);
   border-radius: 3px;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   border: 1px solid currentColor;
   white-space: nowrap;
+  /* A28: state-indication transition (emil-design-eng's valid-purpose
+     list) - the badge changes state occasionally (model load/unload),
+     never continuously, so a smooth color settle instead of an instant
+     snap is a legitimate transition, not noise. */
+  transition: color 220ms var(--ease-out), background-color 220ms var(--ease-out), border-color 220ms var(--ease-out);
 }
 .badge-active { color: #6bffb0; background: rgba(107, 255, 176, 0.08); text-shadow: 0 0 6px rgba(107,255,176,0.6); }
 .badge-idle { color: #e2c67e; background: rgba(226, 198, 126, 0.08); }
@@ -115,82 +157,118 @@ body {
 /* ---- tabs ---- */
 #tabs {
   -webkit-app-region: no-drag;
+  position: relative;
   display: flex;
   flex-shrink: 0;
   background: rgba(var(--accent-rgb), 0.03);
   border-bottom: 1px solid rgba(var(--accent-rgb), 0.22);
-  padding: 0 8px;
+  padding: 0 var(--space-2);
 }
 .tab-btn {
   background: none;
   border: none;
   color: #7fa6b3;
-  padding: 9px 16px;
+  padding: 9px var(--space-4);
   cursor: pointer;
   font-size: 12px;
   letter-spacing: 0.04em;
-  border-bottom: 2px solid transparent;
+  border-bottom: 2px solid transparent; /* kept transparent as layout spacer; #tab-indicator (below) is what actually shows now */
+  transition: color 160ms var(--ease-out);
 }
 .tab-btn:hover { color: #d3ecf5; }
 .tab-btn.active {
   color: var(--accent);
-  border-bottom-color: var(--accent);
   text-shadow: 0 0 6px rgba(var(--accent-rgb), 0.7);
+}
+/* A28: a real sliding indicator (renderer.ts positions this on tab
+   click/load) instead of each button drawing its own static underline -
+   spatial consistency (apple-design §7): the accent visibly travels from
+   the old tab to the new one instead of teleporting, so switching tabs
+   reads as moving through the panel, not swapping two unrelated states.
+   Tab switches are occasional (a user-initiated click), never continuous
+   - exactly the tier constraint #2 allows animation on. */
+#tab-indicator {
+  position: absolute;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(var(--accent-rgb), 0.7);
+  transition: transform 220ms var(--ease-out), width 220ms var(--ease-out);
+  will-change: transform;
 }
 
 main { flex: 1; overflow: hidden; display: flex; }
-.tab-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; padding: 12px; }
+.tab-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; padding: var(--space-3); }
 .tab-panel.active { display: flex; }
 .panel-glass { position: relative; }
+/* A28: tab content gets a short settle-in, not a restart-from-nothing
+   entrance - occasional (one per tab click), purpose is "preventing
+   jarring changes" (emil-design-eng's valid-purpose list), not decoration.
+   Starts from 0.98/translateY(4px), never scale(0) or a hard cut. */
+.tab-panel.active {
+  animation: tab-settle 200ms var(--ease-out);
+}
+@keyframes tab-settle {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 .hint {
-  margin: 0 0 8px 0;
+  margin: 0 0 var(--space-2) 0;
   padding: 7px 11px;
   background: rgba(var(--accent-rgb), 0.06);
   border: 1px solid rgba(var(--accent-rgb), 0.2);
   border-radius: 4px;
-  color: #8fb9c6;
+  color: #9cc3cf; /* A28: brightened from #8fb9c6 - muted text loses contrast fastest over a blurred translucent surface (apple-design "vibrancy") */
   font-size: 11.5px;
+  line-height: 1.5;
 }
 .hint code { color: var(--accent); }
 
 .section-label {
   font-size: 10.5px;
   letter-spacing: 0.1em;
-  color: #6d95a3;
+  color: #7ea3b0; /* A28: brightened from #6d95a3 for the same vibrancy reason */
   text-transform: uppercase;
   margin: 6px 0 4px 2px;
 }
 
-.scroll-list { flex: 1; overflow-y: auto; }
+.scroll-list { flex: 1; overflow-y: auto; line-height: 1.3; } /* A28: tighter leading for dense list rows, vs. body's 1.45 for prose */
 .scroll-list::-webkit-scrollbar { width: 8px; }
 .scroll-list::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb), 0.35); border-radius: 4px; }
 .scroll-list::-webkit-scrollbar-track { background: transparent; }
 
 /* ---- conversation ---- */
 .turn {
-  padding: 7px 11px;
+  padding: var(--space-2) 11px;
   margin-bottom: 7px;
   border-radius: 6px;
   max-width: 78%;
   border: 1px solid rgba(var(--accent-rgb), 0.18);
   background: rgba(var(--accent-rgb), 0.05);
+  line-height: 1.45;
 }
 .turn.user { margin-left: auto; border-color: rgba(var(--accent-rgb), 0.35); }
 .turn.assistant { margin-right: auto; }
-.turn-meta { font-size: 10px; letter-spacing: 0.05em; color: #6d95a3; margin-bottom: 3px; text-transform: uppercase; }
+.turn-meta { font-size: 10px; letter-spacing: 0.05em; color: #7ea3b0; margin-bottom: 3px; text-transform: uppercase; }
 
-/* ---- event feed rows (tools/activity, latency raw) ---- */
+/* ---- event feed rows (tools/activity, latency raw) ----
+   A28: deliberately NO enter/insert animation here. These rows append
+   many times a second during real activity (constraint #2, stated
+   explicitly) - any per-row motion becomes noise almost immediately.
+   font-variant-numeric below is NOT animation, it's static layout: fixed-
+   width digits so a changing number doesn't visibly reflow next to it. */
 .event-row {
   padding: 5px 9px;
   border-bottom: 1px solid rgba(var(--accent-rgb), 0.1);
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
   color: #b9dbe6;
 }
 .event-row .ok { color: #6bffb0; }
 .event-row .fail { color: #ff7a8a; }
-.event-row .ts { color: #5f8894; margin-right: 7px; }
+.event-row .ts { color: #7196a1; margin-right: 7px; } /* A28: brightened from #5f8894 */
 .event-row .src { color: var(--accent); margin-right: 7px; }
 .event-row.daemon .src { color: #b98bff; }
 
@@ -198,35 +276,47 @@ main { flex: 1; overflow: hidden; display: flex; }
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 .timer-chip {
   padding: 4px 9px;
   border: 1px solid rgba(var(--accent-rgb), 0.35);
   border-radius: 12px;
   font-size: 11px;
+  font-variant-numeric: tabular-nums; /* A28: the countdown digit shouldn't reflow the chip width as it ticks down */
   color: var(--accent);
   background: rgba(var(--accent-rgb), 0.07);
 }
 
-/* ---- latency ---- */
+/* ---- latency ----
+   A28: no update-triggered animation on .big/.value - these change every
+   turn (constraint #2, stated explicitly). tabular-nums is the one
+   typographic change: it stabilizes digit width so a value like "681ms"
+   becoming "1204ms" doesn't visibly shove neighboring text, without it
+   being motion at all. */
 .derived-readout {
   padding: 10px 14px;
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
   border: 1px solid rgba(var(--accent-rgb), 0.4);
   border-radius: 6px;
   background: rgba(var(--accent-rgb), 0.06);
   box-shadow: 0 0 16px rgba(var(--accent-rgb), 0.12);
 }
-.derived-readout .big { font-size: 26px; font-weight: 700; font-family: ui-monospace, monospace; }
+.derived-readout .big {
+  font-size: 26px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em; /* A28: large display text wants negative tracking (apple-design §15) */
+}
 .derived-readout .big.over { color: #ff7a8a; }
 .derived-readout .big.ok { color: #6bffb0; }
-.derived-readout .sub { font-size: 11px; color: #8fb9c6; margin-top: 2px; }
+.derived-readout .sub { font-size: 11px; color: #9cc3cf; margin-top: 2px; line-height: 1.4; }
 
 .card-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 8px;
+  gap: var(--space-2);
   margin-bottom: 6px;
 }
 .card {
@@ -235,11 +325,18 @@ main { flex: 1; overflow: hidden; display: flex; }
   border-radius: 6px;
   padding: 9px 11px;
 }
-.card .label { font-size: 10.5px; color: #7fa6b3; letter-spacing: 0.04em; text-transform: uppercase; }
-.card .value { font-size: 19px; font-weight: 700; margin-top: 3px; font-family: ui-monospace, monospace; }
+.card .label { font-size: 10.5px; color: #85acb9; letter-spacing: 0.04em; text-transform: uppercase; } /* A28: brightened from #7fa6b3 */
+.card .value {
+  font-size: 19px;
+  font-weight: 700;
+  margin-top: 3px;
+  font-family: ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
 .card .value.status-OK { color: #6bffb0; }
 .card .value.status-OVER { color: #ff7a8a; }
-.card .target { font-size: 10px; color: #5f8894; margin-top: 2px; }
+.card .target { font-size: 10px; color: #7196a1; margin-top: 2px; font-variant-numeric: tabular-nums; }
 
 /* ---- memory ---- */
 #memory-body { flex: 1; display: flex; gap: 10px; overflow: hidden; }
@@ -250,6 +347,7 @@ main { flex: 1; overflow: hidden; display: flex; }
   border-bottom: 1px solid rgba(var(--accent-rgb), 0.1);
   cursor: pointer;
   font-size: 11.5px;
+  transition: background-color 150ms var(--ease-out); /* A28: hover/select is a discrete pointer state, not continuous data */
 }
 .session-row:hover, .entry-row:hover { background: rgba(var(--accent-rgb), 0.07); }
 .session-row.selected { background: rgba(var(--accent-rgb), 0.14); }
@@ -264,9 +362,18 @@ main { flex: 1; overflow: hidden; display: flex; }
   padding: 1px 6px;
   margin-left: 4px;
   cursor: pointer;
+  transition: color 140ms var(--ease-out), border-color 140ms var(--ease-out), transform 100ms var(--ease-out);
 }
 .entry-row .entry-actions button:hover { color: var(--accent); border-color: var(--accent); }
+.entry-row .entry-actions button:active { transform: scale(0.94); } /* A28: same discrete press feedback as .win-btn */
 .entry-row .entry-actions .danger:hover { color: #ff7a8a; border-color: #ff7a8a; }
+
+/* A28: the edit textarea is a genuine state change (view -> edit), not
+   continuous data - a short settle-in instead of an instant swap, same
+   "preventing jarring changes" purpose as the tab entrance above. */
+.entry-edit {
+  animation: tab-settle 180ms var(--ease-out);
+}
 .entry-edit textarea {
   width: 100%;
   min-height: 60px;
@@ -276,6 +383,41 @@ main { flex: 1; overflow: hidden; display: flex; }
   border-radius: 4px;
   padding: 6px;
   font-size: 11.5px;
+  line-height: 1.4;
   font-family: inherit;
   resize: vertical;
+}
+
+/* A28: deletion is a real, occasional state change the user just
+   triggered (clicked "delete", confirmed a dialog) - collapsing smoothly
+   instead of vanishing instantly is "preventing jarring changes," the
+   same valid purpose as everything else here. renderer.ts adds this
+   class, waits for the transition, then removes the element - never an
+   instant .remove(). */
+.entry-row.removing {
+  opacity: 0;
+  transform: scale(0.98);
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin: 0;
+  border: 0;
+  transition: opacity 160ms var(--ease-out), transform 160ms var(--ease-out),
+    max-height 200ms var(--ease-out) 40ms, padding 200ms var(--ease-out) 40ms,
+    margin 200ms var(--ease-out) 40ms, border-width 200ms var(--ease-out) 40ms;
+}
+
+/* A28: respect prefers-reduced-motion - cross-fade only, no
+   movement/scale, per apple-design §14. The log feed and latency numbers
+   were never animated in the first place, so most of this app needs no
+   change; this covers the transitions actually added above. */
+@media (prefers-reduced-motion: reduce) {
+  .tab-panel.active { animation: none; }
+  .entry-edit { animation: none; }
+  .win-btn:active, .entry-row .entry-actions button:active { transform: none; }
+  #tab-indicator { transition: opacity 120ms ease; }
+  .entry-row.removing {
+    transform: none;
+    transition: opacity 120ms ease, max-height 120ms ease, padding 120ms ease, margin 120ms ease, border-width 120ms ease;
+  }
 }
