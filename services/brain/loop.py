@@ -41,11 +41,13 @@ without these two records there was nothing for it to read.
 
 import asyncio
 import json
+import time
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
 from services.brain import client as brain_client
+from services.daemon import greeting_signal
 from services.ears import pipeline
 from services.memory import embeddings as memory_embeddings
 from services.memory import store as memory_store
@@ -66,6 +68,36 @@ def _load_barge_in_config() -> dict:
     with CONFIG_PATH.open("rb") as f:
         config = tomllib.load(f)
     return config.get("brain", {}).get("barge_in", {})
+
+
+def _load_greeting_config() -> dict:
+    with CONFIG_PATH.open("rb") as f:
+        config = tomllib.load(f)
+    return config.get("brain", {}).get("greeting", {})
+
+
+async def _speak_greeting_if_ready(session_id: str) -> None:
+    """Bounded poll for services/daemon/greeting_signal.py's handoff file -
+    the daemon composes the greeting on its own faster cadence
+    ([daemon.greeting].poll_interval_s) specifically so this window can stay
+    short. Never blocks indefinitely: a daemon that isn't running yet (or at
+    all - it's optional, per its own module docstring) means this just times
+    out and the process starts listening silently, exactly like a stuck
+    playback_state flag only delays one announcement rather than hanging the
+    daemon forever (services/daemon/daemon.py's own precedent)."""
+    config = _load_greeting_config()
+    if not config.get("enabled", True):
+        return
+    deadline = time.monotonic() + config.get("wait_s", 10)
+    poll_interval = config.get("poll_interval_s", 0.5)
+    while time.monotonic() < deadline:
+        text = greeting_signal.read_and_consume(session_id)
+        if text:
+            _log({"stage": "greeting", "outcome": "spoken", "text": text})
+            await voice_tts.speak(text)
+            return
+        await asyncio.sleep(poll_interval)
+    _log({"stage": "greeting", "outcome": "timed_out"})
 
 
 def _log(record: dict) -> None:
@@ -144,6 +176,8 @@ async def run(memory: MemoryManager) -> None:
             return
         _log({"stage": "wake_cancel", "action": "cancelled", "reason": "barge_in", "elapsed_s": round(elapsed, 3)})
         response_task.cancel()
+
+    await _speak_greeting_if_ready(memory.session_id)
 
     print("Cortana is listening... (Ctrl+C to stop)\n")
     async for user_text in pipeline.listen(on_wake=_on_wake):

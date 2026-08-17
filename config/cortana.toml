@@ -302,6 +302,17 @@ radio_in_band_threshold = 0.75   # flag as likely comms/radio-filtered if >= thi
 # cancelling there only destroys work for no perceptible benefit.
 min_playback_s = 0.3
 
+[brain.greeting]
+# services/brain/loop.py polls for services/daemon/greeting_signal.py's
+# handoff file at startup, up to this long, before giving up and just
+# starting to listen silently (a slow-starting or not-yet-running daemon
+# shouldn't delay the actual point of this process - listening for wake
+# words). Bounded, not indefinite - same "a stuck signal delays one thing,
+# never blocks forever" precedent as [daemon].max_playback_wait_s.
+enabled = true
+wait_s = 10
+poll_interval_s = 0.5
+
 [latency]
 
 [memory]
@@ -664,6 +675,16 @@ quiet_hours_end   = "08:00"
 # flag (e.g. a crash between mark_started()/mark_stopped()) delays one
 # announcement instead of silencing the daemon forever.
 max_playback_wait_s = 60
+
+[daemon.greeting]
+# session_trigger.py's own poll cadence - deliberately much faster than
+# [daemon].poll_interval_s above (30s). A greeting has to be composed and
+# handed off before services/brain/loop.py's own bounded wait
+# ([brain.greeting].wait_s) gives up; sharing the 30s general cadence would
+# very often miss that window. Cheap to poll this often - the real cost
+# (an LLM call to compose the greeting) only fires once per actual new
+# session, not every tick (session_trigger.py's own dedup).
+poll_interval_s = 2
 
 [daemon.timers]
 # tools/set_timer.py (agent-callable) writes here; services/daemon/timers.py

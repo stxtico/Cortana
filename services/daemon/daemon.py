@@ -37,19 +37,31 @@ import tomllib
 from datetime import datetime, time as dtime, timezone
 from pathlib import Path
 
-from services.daemon import calendar_trigger, email_trigger, output, relevance, timers, worker_trigger
+from services.daemon import calendar_trigger, email_trigger, greeting_signal, output, relevance, session_trigger, timers, worker_trigger
 from services.voice import playback_state
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
 LOG_PATH = ROOT / "logs" / "daemon.jsonl"
 
-# Every trigger source, timers first since it's the only one that's actually
-# live on this machine - order doesn't affect behavior, just log readability.
-# worker_trigger (PROMPTS.md A21) is the mechanism behind "she tells you
-# when it's done" - a delegated task's completion becomes a candidate the
-# same way a fired timer already does.
+# Every trigger source polled on the general [daemon].poll_interval_s
+# cadence (30s default) - timers first since it's the only one that's
+# actually live on this machine, order otherwise doesn't affect behavior,
+# just log readability. worker_trigger (PROMPTS.md A21) is the mechanism
+# behind "she tells you when it's done" - a delegated task's completion
+# becomes a candidate the same way a fired timer already does.
+#
+# session_trigger (session-start greeting) is deliberately NOT in this list
+# - it's polled on its own faster cadence by _session_loop() below (see that
+# function's docstring for why 30s is too slow for this one source), and its
+# candidates take a different path through _handle_candidate (see
+# _SESSION_SOURCE_NAME) since a greeting isn't an interruption and the
+# daemon has no speech path of its own to deliver it with regardless. Still
+# "another trigger, not a new system" - same module shape, same dedup set,
+# same _handle_candidate entry point - just a different poll cadence and
+# delivery mechanism, both for real, documented reasons.
 _SOURCES = [timers, worker_trigger, calendar_trigger, email_trigger]
+_SESSION_SOURCE_NAME = "session"
 
 
 def _load_config() -> dict:
@@ -133,8 +145,33 @@ async def _wait_for_playback(max_wait_s: float) -> bool:
 
 
 async def _handle_candidate(
-    candidate: dict, config: dict, limiter: RateLimiter, think: bool, max_wait_s: float
+    candidate: dict, config: dict, limiter: RateLimiter, think: bool, max_wait_s: float, announced_ids: set[str]
 ) -> None:
+    # Session-start greeting: an explicit, logged bypass of quiet hours, the
+    # rate limiter, AND the relevance filter - none of the three protections
+    # this function exists to apply are answering the question they were
+    # built for here. Quiet hours and rate limiting exist to stop the daemon
+    # interrupting the user unprompted; a greeting only ever fires because
+    # the user just launched the app themselves, which is the opposite of
+    # unprompted. Relevance answers "is this worth interrupting for" - a
+    # greeting isn't an interruption at all, there's nothing else going on
+    # to interrupt. Delivered via greeting_signal's file handoff, not
+    # output.announce() (print+toast) - the daemon has no speech path of its
+    # own (see this module's docstring), so services/brain/loop.py is the
+    # one that actually speaks it.
+    if candidate["source"] == _SESSION_SOURCE_NAME:
+        if not await _wait_for_playback(max_wait_s):
+            _log({"stage": "suppressed", "reason": "playback_wait_timeout", **candidate})
+            return
+        greeting_signal.write_greeting(candidate["summary"], candidate["id"].removeprefix("session-"))
+        # Seed the worker-completion ids this greeting already covered into
+        # the shared dedup set, so worker_trigger's own next poll doesn't
+        # separately re-announce the same finished tasks a moment later -
+        # the double-announcement risk flagged when this design was decided.
+        announced_ids.update(candidate.get("mentioned_worker_ids", []))
+        _log({"stage": "announced", "source": candidate["source"], "id": candidate["id"], "summary": candidate["summary"]})
+        return
+
     # Cheap gates first - no reason to spend an LLM call on something quiet
     # hours or the rate limit would suppress anyway.
     if _in_quiet_hours(config):
@@ -167,13 +204,40 @@ async def _tick(config: dict, limiter: RateLimiter, announced_ids: set[str], thi
         # poll cycle) - same "the event itself is the mark" reasoning
         # timers.py already applies to its own store.
         announced_ids.add(c["id"])
-        await _handle_candidate(c, config, limiter, think, max_wait_s)
+        await _handle_candidate(c, config, limiter, think, max_wait_s, announced_ids)
+
+
+async def _session_loop(config: dict, limiter: RateLimiter, announced_ids: set[str], max_wait_s: float, interval: float) -> None:
+    """session_trigger polled on its own faster cadence, decoupled from
+    _tick()'s general [daemon].poll_interval_s (30s default). Found live
+    while wiring this up, not assumed: a session-start greeting has to be
+    detected in a handful of seconds (services/brain/loop.py only waits a
+    bounded amount at its own startup before giving up and starting
+    silently - see that module), and the other sources' 30s cadence is
+    tuned for things that genuinely don't need faster checking (an unread
+    email, a calendar event 20 minutes out). Sharing that cadence would
+    mean the greeting is very often composed too late to ever reach
+    loop.py's own wait window. This loop's own poll is still cheap in the
+    common case - session_trigger.poll() only pays the real LLM-composition
+    cost on an actual session_id change, a plain file read otherwise (see
+    that module's own _last_composed_session_id gate)."""
+    while True:
+        try:
+            for candidate in await session_trigger.poll():
+                if candidate["id"] in announced_ids:
+                    continue
+                announced_ids.add(candidate["id"])
+                await _handle_candidate(candidate, config, limiter, False, max_wait_s, announced_ids)
+        except Exception as exc:
+            _log({"stage": "poll_error", "source": session_trigger.__name__, "error": str(exc)})
+        await asyncio.sleep(interval)
 
 
 async def run() -> None:
     config = _load_config()
     interval = config.get("poll_interval_s", 30)
     max_wait_s = config.get("max_playback_wait_s", 60)
+    greeting_interval = config.get("greeting", {}).get("poll_interval_s", 2)
     limiter = RateLimiter(config.get("rate_limit_per_hour", 2))
     announced_ids: set[str] = set()
     think = _think_default()
@@ -181,13 +245,21 @@ async def run() -> None:
     _log({
         "stage": "daemon_start",
         "poll_interval_s": interval,
+        "greeting_poll_interval_s": greeting_interval,
         "rate_limit_per_hour": limiter.max_per_hour,
         "quiet_hours": f"{config.get('quiet_hours_start')}-{config.get('quiet_hours_end')}",
     })
-    try:
+
+    async def _main_loop() -> None:
         while True:
             await _tick(config, limiter, announced_ids, think, max_wait_s)
             await asyncio.sleep(interval)
+
+    try:
+        await asyncio.gather(
+            _main_loop(),
+            _session_loop(config, limiter, announced_ids, max_wait_s, greeting_interval),
+        )
     except asyncio.CancelledError:
         _log({"stage": "daemon_stop"})
         raise

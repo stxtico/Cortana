@@ -29,6 +29,25 @@ async def is_available() -> bool:
     return True  # no external dependency - always on
 
 
+def pending_timers() -> list[dict]:
+    """Real, currently-waiting (not yet fired) timers - the reader poll()
+    above never needed, since it only ever looks at timers that just fired.
+    Added for services/daemon/session_trigger.py's greeting context ("a
+    timer is waiting"), which needs the opposite query: what's still
+    pending, not what just went off. Read-only, no side effect on the
+    store (unlike poll(), which marks fired timers as consumed) - safe to
+    call as often as needed without racing the real poll loop."""
+    path = _store_path()
+    if not path.exists():
+        return []
+    try:
+        timers = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return []
+    now = time.time()
+    return [t for t in timers if not t.get("fired") and t.get("fire_at", float("inf")) > now]
+
+
 async def poll() -> list[dict]:
     """Returns candidates for any timer that's due and hasn't fired yet, and
     marks them fired in the store immediately - a timer firing is itself the

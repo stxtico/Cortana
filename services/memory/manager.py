@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from services.brain import client as brain_client
-from services.memory import embeddings, profile, store, summarize
+from services.memory import embeddings, profile, session_state, store, summarize
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = ROOT / "config" / "cortana.toml"
@@ -62,6 +62,7 @@ class MemoryManager:
         db_path = ROOT / self._config["db_path"]
         self._conn = store.get_connection(db_path, self._config["embedding_dim"])
         _log({"stage": "session_start", "session_id": self.session_id})
+        session_state.write_session_start(self.session_id)  # cross-process signal for services/daemon/session_trigger.py
 
     def _spawn(self, coro, label: str) -> None:
         task = asyncio.ensure_future(coro)

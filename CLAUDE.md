@@ -13,7 +13,8 @@ layer), A24 (tool wave 2, deliverables), A25 (default-allow computer use), A26
 per explicit instruction each time — that closes out TRACK A entirely; everything
 remaining in PROMPTS.md is TRACK B (requires the Spark) or A16/A17. A16/A17
 (camera/ambient awareness) are the next fully-untouched
-phase.
+phase. A launcher exe, a session-start greeting, and persona.md self-knowledge also
+shipped ad hoc (not a PROMPTS.md phase) — see Done below.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -414,6 +415,59 @@ A8's tool-calling demands first, see Done below)
   `GetWindowRect()` values silently grabbed a different window (Spotify) instead of
   erroring — fixed by subtracting `GetSystemMetrics(SM_XVIRTUALSCREEN/YVIRTUALSCREEN)`
   before cropping. [docs/history/ui-craft-pass.md](docs/history/ui-craft-pass.md)
+- **Launcher, session-start greeting, and self-knowledge (ad hoc, not a PROMPTS.md
+  phase)** — three parts. (1) `ui/src/main.ts` became the launcher itself: no
+  electron-builder, no separate Python supervisor process — spawns `uv run python -m
+  services.brain.loop`/`services.daemon.daemon` on `app.whenReady()`, a Tray icon
+  ("Quit Cortana") replaces `window-all-closed`'s old `app.quit()` as the real stop
+  mechanism, `killProcessTree()` uses `taskkill /pid <pid> /T /F` (bare
+  `process.kill()` only reaches the top-level `uv.exe` wrapper, not the real
+  model-loaded `python.exe` descendant — verified live via an independent `tasklist`
+  check that it cascades through all three). Ollama/model-missing checks
+  (`checkOllamaAndModel()`, a one-time `/api/tags` check) are informational only, never
+  block spawning. Startup registration is a Startup-folder `.lnk` (not Task Scheduler —
+  needs a real interactive session for mic/GPU/windows, and a shortcut is simpler than
+  Task Scheduler's "run only when logged on" XML config for identical behavior),
+  command given to the user to run themselves. (2) Session-start greeting: a new daemon
+  trigger (`services/daemon/session_trigger.py`), not a new system — A11's relevance
+  filter/rate limiting still apply to every other source, explicitly bypassed only for
+  this one since a greeting fires because the user just launched the app. The daemon
+  had zero speech path before this (`announce()` is print + toast,
+  `set_output_handler()` defined but never called) — fixed via a file handoff
+  (`services/daemon/greeting_signal.py`), same atomic-write idiom as
+  `playback_state.py`/`listening_state.json`, consumed by `loop.py` (the only process
+  that owns TTS) at startup. Composed live via `brain_client.stream()` (same Ollama
+  server, no new model), genuinely conditioned on real context (time-of-day bucket, up
+  to 3 recently-finished worker tasks, pending timers) — verified live that a pending
+  timer actually changes the composed text, not just that it's non-empty. Real timing
+  bug found and fixed: the daemon's normal 30s poll cadence was far too slow for
+  `loop.py`'s bounded ~10s startup wait, so `session_trigger` got its own faster,
+  decoupled poll loop (`[daemon.greeting].poll_interval_s = 2`) run via
+  `asyncio.gather()` alongside the main loop. Double-announcement risk (the greeting
+  mentioning a finished worker task, then `worker_trigger.py` re-announcing the same
+  task moments later) closed by seeding the shared `announced_ids` dedup set from the
+  greeting's own `mentioned_worker_ids`. "Unread notification" was dropped as a
+  greeting context source per explicit instruction. (3) `config/persona.md` gained a
+  "What she actually is" section: local assistant built by the user, modeled on Halo's
+  Cortana without claiming to be her (stated as load-bearing against roleplay drift,
+  not a formality), runs almost entirely locally except `web_search`/`fetch_url`/active
+  `computer` browsing, memory persists across sessions in a real disk store, points at
+  `capability_list` for the live dormant-tool set rather than reciting a count that
+  would go stale. Fixed three now-stale "Phase 1 she has no CAD tools (A14)" passages
+  found while in there — A14 shipped, she has real CAD verification tools now.
+  **Flagged, not fixed, per explicit instruction:** persona.md and tool-calling never
+  coexist in one model context today — `loop.py`'s live voice path calls
+  `brain_client.stream()` with no `tools=` argument at all (`run_agent()`, the only
+  code path that attaches tool specs, is never called from `loop.py`), so a real spoken
+  "what can you do" today can only be answered from persona.md's own text, not
+  `capability_list` — real, separate architectural work for its own future step. All
+  three parts live-tested against something external, not just return values: real
+  process spawn/recursive-kill verified via independent `tasklist` checks; the
+  greeting pipeline's 9/9 automated checks included proof the composed text genuinely
+  varies with real context and that `loop.py`'s speak-if-ready logic both succeeds
+  within its window and times out cleanly; persona.md's real `_load_persona()` output
+  checked for the new section and the absence of stale strings.
+  [docs/history/launcher-greeting-selfknowledge.md](docs/history/launcher-greeting-selfknowledge.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b
