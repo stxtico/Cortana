@@ -70,7 +70,28 @@ import { readLastLines, JsonlTailer, JsonRecord } from "./log_tail";
 import { runPython } from "./py_bridge";
 import { createCharacterWindow, startCharacterFeatures } from "./character_main";
 
-const ROOT = path.join(__dirname, "..", "..");
+// ROOT resolution, decided explicitly for the packaged-exe work: in dev
+// (`electron .` from ui/, unpackaged) __dirname is ui/dist and the existing
+// "..", ".." walk correctly lands on the real checkout. Packaged via
+// electron-builder's portable target, that walk breaks - the portable exe
+// self-extracts its resources to a fresh %TEMP% directory on every launch
+// (that's what electron-builder's own PORTABLE_EXECUTABLE_DIR env var
+// exists to work around - it's the dir holding the double-clicked .exe, not
+// where the code actually runs from), so __dirname points into a
+// throwaway temp copy, not C:\dev\cortana, and everything downstream
+// (config, logs, the memory store, spawning the real Python side) would
+// silently point at the wrong place. Three options considered: an env var
+// (another manual setup step to configure and forget, on top of the
+// Startup-folder registration already required), a config file beside the
+// exe (unreliable for the same reason __dirname is - "beside the exe" and
+// "the temp dir code runs from" aren't the same directory for a portable
+// build), or a hardcoded path. Picked hardcoded, per the user's own
+// framing of this as an explicitly single-machine tool - it's the one
+// option with no extra runtime indirection to get wrong, and it's a single
+// constant to change if this checkout ever moves. app.isPackaged branches
+// so dev-mode (`npm start`) keeps working unchanged.
+const PACKAGED_ROOT = "C:\\dev\\cortana";
+const ROOT = app.isPackaged ? PACKAGED_ROOT : path.join(__dirname, "..", "..");
 // Fallback only - overwritten from [models].endpoint the instant
 // loadModelsConfig() runs in whenReady(), same "read from config, this is
 // just the pre-config-load default" reasoning as loadUiConfig()'s defaults

@@ -468,6 +468,38 @@ A8's tool-calling demands first, see Done below)
   within its window and times out cleanly; persona.md's real `_load_persona()` output
   checked for the new section and the absence of stale strings.
   [docs/history/launcher-greeting-selfknowledge.md](docs/history/launcher-greeting-selfknowledge.md)
+- **A real, double-clickable Cortana.exe (ad hoc, not a PROMPTS.md phase)** —
+  `electron-builder`'s portable Windows target now packages `ui/` into a real
+  `Cortana.exe`, closing the "`electron.exe .` from a shell" gap the prior launcher work
+  left open. The deliberate problem: a portable build self-extracts to a fresh `%TEMP%`
+  directory on every launch, so `ROOT`'s old `__dirname`-relative resolution would
+  silently point at that throwaway copy instead of `C:\dev\cortana`. Of the three
+  options (env var, config file beside the exe, hardcoded path), picked hardcoded
+  (`app.isPackaged` branches to `C:\\dev\\cortana`, dev mode unchanged) — the user's own
+  framing of this as a single-machine tool made it the option with no extra runtime
+  indirection to get wrong. Only the Electron main-process JS travels inside the
+  package; the renderer, every asset, and the Python side still load live from the real
+  checkout via `ROOT`-relative paths that were already there — packaging adds a
+  double-clickable entry point, it doesn't freeze or copy the app. Two real upstream
+  bugs hit and fixed: electron-builder's own `blockmap.js` breaks on `@noble/hashes`
+  2.x being pure ESM (fixed via an npm `overrides` pin to `1.8.0`, the last dual-format
+  release), and its icon converter rejected the existing multi-size tray `.ico` because
+  it reads the *first* (smallest) embedded frame as canonical (fixed by adding a
+  dedicated 1024×1024 PNG source, the standard electron-builder convention). Live-tested
+  by launching via PowerShell's `Start-Process` (Windows' `ShellExecute`, the real
+  double-click mechanism) rather than any dev-shell command — confirmed the temp
+  self-extraction is real (a different path than the built exe), confirmed via
+  `Get-CimInstance Win32_Process` (not the launcher's own log) that the spawned
+  `loop.py`/`daemon.py` still resolved to the real `C:\dev\cortana` checkout, confirmed
+  via a real screenshot that the window actually rendered live content and the taskbar
+  icon shows the intended glyph, and confirmed a single `taskkill /T /F` on the main
+  window PID cascaded through and killed the entire real 13-process tree it had
+  actually spawned. No literal mouse click — no desktop automation is available in this
+  environment, only browser automation — `ShellExecute` is the closest available proxy
+  and, unlike `electron.exe .`, genuinely exercises the portable self-extraction path.
+  Not done: no code-signing (unsigned exe, SmartScreen may warn) and no auto-update
+  wiring (rebuild via `npm run dist:exe` is the accepted workflow for a single-machine
+  tool). [docs/history/exe-packaging.md](docs/history/exe-packaging.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b

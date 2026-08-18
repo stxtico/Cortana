@@ -6,15 +6,38 @@
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.renderer.json",
-    "start": "npm run build && electron ."
+    "start": "npm run build && electron .",
+    "dist:exe": "npm run build && electron-builder --win portable"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
     "electron": "^39.8.10",
+    "electron-builder": "^26.15.7",
     "typescript": "^7.0.2"
   },
   "dependencies": {
     "pixi-live2d-display": "^0.4.0-beta.2",
     "pixi.js": "^6.5.10"
+  },
+  "overrides": {
+    "@noble/hashes": "1.8.0"
+  },
+  "build": {
+    "appId": "com.cortana.launcher",
+    "productName": "Cortana",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "portable",
+      "icon": "assets/app-icon.png"
+    },
+    "portable": {
+      "artifactName": "${productName}.exe"
+    }
   }
 }
