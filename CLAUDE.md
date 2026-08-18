@@ -13,8 +13,9 @@ layer), A24 (tool wave 2, deliverables), A25 (default-allow computer use), A26
 per explicit instruction each time — that closes out TRACK A entirely; everything
 remaining in PROMPTS.md is TRACK B (requires the Spark) or A16/A17. A16/A17
 (camera/ambient awareness) are the next fully-untouched
-phase. A launcher exe, a session-start greeting, and persona.md self-knowledge also
-shipped ad hoc (not a PROMPTS.md phase) — see Done below.
+phase. A launcher exe (now a real packaged Cortana.exe), a session-start greeting,
+persona.md self-knowledge, and a UI depth pass also shipped ad hoc (not a PROMPTS.md
+phase) — see Done below.
 **Hardware:** RTX 3080 Ti (12GB VRAM), i9-12900K, 32GB RAM, dual 1440p, Windows 11
 **Model:** Gemma 4 Unified, elastic (Q4, multimodal — covers vision too), Ollama tag
 `gemma4:e4b` (switched from `gemma4:12b` — 3.2GB resident vs ~9.8GB, validated against
@@ -500,6 +501,31 @@ A8's tool-calling demands first, see Done below)
   Not done: no code-signing (unsigned exe, SmartScreen may warn) and no auto-update
   wiring (rebuild via `npm run dist:exe` is the accepted workflow for a single-machine
   tool). [docs/history/exe-packaging.md](docs/history/exe-packaging.md)
+- **UI depth pass, A29 (ad hoc, not a PROMPTS.md phase)** — the A28 craft pass read as
+  too subtle to notice; this pass (still `apple-design`) deliberately left typography/
+  spacing alone and pushed on hierarchy, depth, and panel treatment instead.
+  `ui/style.css` gained a real elevation system (`--elevate-sm`/`--elevate-lg`, a black
+  cast shadow plus a top-edge highlight — the old design only had an accent-colored glow,
+  which reads as a light source, not a raised layer) and material-weight
+  differentiation between chrome (titlebar, heaviest), nav (tab strip, recessed groove),
+  and content (lightest) zones. The derived latency readout now gets a genuinely bigger
+  shadow tier and larger type than the card grid beneath it — a real hero/secondary
+  split where before both read as equally important. The active tab became a filled,
+  raised pill instead of a 2px underline (same `renderer.ts` positioning math,
+  unchanged). Conversation bubbles gained real elevation and a corner tail anchored to
+  whichever edge they're already pinned to. Zero new motion added anywhere — the log
+  feed and the latency numbers' own elements are untouched, same constraint as A28;
+  only their containers gained static shadows. Character layer confirmed untouched via
+  diff. Verified with a real before/after screenshot, not a description: launched the
+  dev app twice (`git stash` to get the committed A28 CSS, then the new version),
+  screenshotted both, and composited them side by side. Two real bugs surfaced and
+  were fixed while doing this — `Get-Process`'s `MainWindowHandle` returned the
+  character overlay instead of the control panel (fixed via `EnumWindows` + title
+  match), and manual `SetWindowPos` coordinates landed ~140-190px off on this
+  machine's negative-coordinate secondary monitor because the calling PowerShell
+  process isn't per-monitor-DPI-aware (fixed by using `SW_MAXIMIZE`, which lets
+  Windows/Electron compute the correct bounds internally instead of guessing
+  coordinates from outside). [docs/history/ui-depth-pass.md](docs/history/ui-depth-pass.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b
