@@ -552,6 +552,35 @@ A8's tool-calling demands first, see Done below)
   overlaying the user's own live work — stopped immediately once noticed, remaining
   verification restricted to the confirmed-empty secondary monitor.
   [docs/history/ui-opacity-fix.md](docs/history/ui-opacity-fix.md)
+- **A30, a free redesign pass (ad hoc, not a PROMPTS.md phase)** — explicit instruction:
+  no constraints beyond keeping the 4 tabs functional, character layer untouched unless
+  there's a real argument otherwise, stay readable at a glance. Made the case, since
+  invited to: the character window already carries "this is Cortana" (blue glow,
+  scanlines); reusing that skin for a data-dense debug panel fights legibility rather
+  than serving it (apple-design's own "flexibility — design for different contexts"
+  principle), and this session's whole opacity-fix chapter was a direct symptom of that
+  fight. Replaced the horizontal tab strip with a persistent vertical sidebar nav
+  (`renderer.ts`'s `moveTabIndicator()` now positions on Y instead of X — the only JS
+  change; tab-switching logic itself untouched), moved the base from blue-black to
+  neutral graphite (`--base-rgb` value only, not a new property — this session had
+  already hit new custom properties silently failing to resolve), and demoted the cyan
+  accent from "on every border" to three precise marks (sidebar glyph, active-nav bar,
+  latency hero's left edge) — restraint as an explicit apple-design principle, not an
+  oversight. Reused the opacity-fix's proven opaque + `isolation: isolate` pattern
+  wholesale across every content surface rather than reinventing it. Character layer
+  confirmed untouched via diff; all IDs/classes `renderer.ts`/`main.ts` depend on
+  preserved exactly, so every data-wiring path (log tailing, memory edit/delete,
+  latency polling) kept working with zero IPC changes. Verified live: rebuilt clean,
+  switched tabs via Playwright's page-level `click()` over CDP (deliberately not
+  `win32api` mouse simulation, which moves the real OS cursor) to screenshot all four
+  tabs, confirmed the Memory tab still queries the real store and the Latency tab's
+  card grid/raw-event feed render with correct status coloring. A real process note,
+  reported honestly: earlier verification in this session had — before being caught
+  and stopped — used a topmost window positioned over the user's actively-used primary
+  monitor; every screenshot for this pass instead used only the confirmed-empty
+  secondary monitor, per the user's own explicit instruction to reuse the working
+  `SW_MAXIMIZE`/`EnumWindows` approach rather than rediscovering that class of bug.
+  [docs/history/ui-instrument-panel-redesign.md](docs/history/ui-instrument-panel-redesign.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b

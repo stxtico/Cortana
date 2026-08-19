@@ -33,17 +33,21 @@ window.cortana.onWindowState((state) => {
   btn.title = state.maximized ? "Restore" : "Maximize";
 });
 
-// ---- tabs ----
-// A28: sliding indicator instead of each button drawing its own static
+// ---- sidebar nav ----
+// A28/A30: sliding indicator instead of each button drawing its own static
 // underline - see style.css's #tab-indicator comment for why (spatial
 // consistency, occasional-only motion). Positioned in real button
-// coordinates (offsetLeft/offsetWidth), not guessed percentages, so it
-// still lines up if tab label widths ever change.
+// coordinates, not guessed percentages, so it still lines up if a label's
+// height ever changes. A30 moved navigation from a horizontal tab strip to
+// a vertical sidebar rail - the indicator now slides on the Y axis
+// (offsetTop/height) instead of X (offsetLeft/width); the click-handling
+// logic below is unchanged, since it only ever cared about .tab-btn/
+// data-tab, never about physical layout.
 const tabIndicator = document.getElementById("tab-indicator")!;
 
 function moveTabIndicator(btn: HTMLButtonElement): void {
-  tabIndicator.style.transform = `translateX(${btn.offsetLeft}px)`;
-  tabIndicator.style.width = `${btn.offsetWidth}px`;
+  tabIndicator.style.transform = `translateY(${btn.offsetTop}px)`;
+  tabIndicator.style.height = `${btn.offsetHeight}px`;
 }
 
 document.querySelectorAll<HTMLButtonElement>(".tab-btn").forEach((btn) => {

@@ -1,106 +1,50 @@
-/* Blue holographic instrumentation aesthetic (PROMPTS.md A12 visual
-   direction, craft passes A28/A29) - readouts, not a consumer app.
-   --accent/--accent-rgb/--panel-opacity/--blur-px are set at runtime from
-   [ui] in cortana.toml (renderer.ts applyUiConfig()) - defaults here only
-   cover the instant before that config round-trip lands.
-
-   A28 (emilkowalski/skills: emil-design-eng, apple-design): typography
-   (size-specific tracking, tabular numerals), a real spacing scale,
-   legibility contrast on muted text, and motion reserved for transitions/
-   state changes only - explicitly NOT the log feed (updates many times a
-   second) or the latency numbers (update every turn).
-
-   A29 (apple-design, a deeper pass on the same constraints - the user
-   found A28 too subtle to see): hierarchy and depth, not more typography.
-   Same holographic direction, same 4 tabs, same information density,
-   still zero new motion on the log feed or latency numbers. What changed
-   is material weight (apple-design SS12: "material weight encodes
-   hierarchy" - chrome/nav read heavier and darker than content, content
-   reads lighter), real elevation (every raised surface now casts an
-   actual shadow AND catches a highlight on its top edge, not just an
-   accent-colored glow - a glow alone reads as a light source, not a
-   physical layer sitting above another), and a genuine hero/secondary
-   split on the metrics that were previously all the same visual weight
-   (the derived latency readout is the one number that matters most per
-   turn; the card grid beneath it is supporting detail - now the shadow
-   depth, glow size, and type scale actually say so instead of leaving it
-   to a text label alone, apple-design SS16 "build hierarchy from weight +
-   size + leading as a set, not size alone"). See --elevate-*/--edge-*
-   variables and their comments below. */
+/* A30 - a free redesign pass (apple-design skill, no constraints from the
+   user this time beyond: keep the 4 tabs, don't break function, character
+   layer stays as-is, this is a debug panel read at a glance while things
+   are running). Replaces A28/A29's holographic-hud direction with an
+   instrument-panel direction. The reasoning, briefly (full case in
+   docs/history/): the character window already carries "this is Cortana" -
+   blue glow, scanlines, the whole sci-fi identity. This panel's job is
+   different - it's the thing a developer actually reads while debugging
+   latency or checking what a tool call did, at speed, against whatever's
+   behind it on a real desktop. Two things borrowing the same skin for two
+   different jobs is the opposite of apple-design SS16's "flexibility -
+   design for different contexts": a HUD reads great as a character's
+   ambient presence and fights legibility as a data-dense tool (this
+   session's whole opacity-fix chapter is a direct symptom of that fight).
+   So: a real instrument-panel structure (persistent sidebar nav, not a tab
+   strip that has to be scanned top-to-bottom with the content below it),
+   a neutral near-black base instead of blue-black (so real status colors -
+   green/amber/red - read as themselves instead of fighting a cyan cast),
+   and the cyan accent kept but demoted to a precise identifier (the
+   sidebar glyph, the active-nav mark) rather than smeared across every
+   border and glow the way A28/A29 had it. Same opaque-content-surface +
+   isolation:isolate pattern this session's opacity fix proved reliable -
+   reused wholesale, not reinvented. No new CSS custom properties added
+   beyond editing two that already existed (--base-rgb's value, unchanged
+   mechanism) - this session hit an unexplained case where brand-new
+   custom properties silently failed to resolve in this Electron build;
+   staying on literal values here is a deliberate, defensive choice, not
+   an oversight. */
 
 :root {
   --accent: #39e6ff;
   --accent-rgb: 57, 230, 255;
   --panel-opacity: 0.82;
   --blur-px: 20px;
-  --base-rgb: 6, 10, 16;
+  /* A30: neutral graphite instead of A28/A29's blue-black - the base a
+     real instrument panel sits on, so status colors (green/amber/red)
+     read as themselves instead of everything inheriting a cyan cast. */
+  --base-rgb: 9, 10, 12;
 
-  /* Spacing scale (A28) - replaces the ad hoc 6px/7px/9px/11px/14px mix
-     with a small deliberate set, so every gap is a multiple of one unit
-     instead of a slightly-different guess each time. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 24px;
 
-  /* Custom easing (A28, emil-design-eng) - the built-in CSS easings are
-     too weak to read as intentional. ease-out for anything entering or
-     responding to input; ease-in-out for on-screen state morphs. Never
-     ease-in - it delays the start, which is the exact moment being
-     watched most closely. */
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-
-  /* Elevation system (A29, apple-design SS12) - a real physical shadow
-     (black, directional, cast downward) plus a 1px highlight on the
-     surface's own top edge ("light catching the material"). The old
-     design only had an accent-colored glow, which reads as a light
-     SOURCE, not a raised layer - nothing actually looked like it was
-     sitting above anything else. Two tiers: a smaller one for ordinary
-     raised chips (cards, turns, chips), a larger one for the one hero
-     element per view (the derived latency readout) - the size
-     difference between the two tiers is itself a hierarchy signal, not
-     just decoration.
-
-     A29 fix, same investigation below: this used to be two custom
-     properties (--elevate-sm/--elevate-lg) referenced via var() at
-     every call site. Every new custom property added in this session -
-     these, --material-chrome/-recess, --content-fill/-accent - reliably
-     failed to resolve in the live app (confirmed via computed-style
-     inspection: getComputedStyle(document.documentElement) returned ''
-     for all of them, while --accent-rgb/--panel-opacity/--blur-px,
-     defined a few lines above and untouched by this session, resolved
-     correctly every time) despite being syntactically valid and present
-     in the loaded stylesheet. Root cause not resolved within a
-     reasonable debugging budget - inlined as literal values at every
-     call site instead (search style.css for "rgba(255, 255, 255, 0.07)
-     inset" to find every raised surface), which sidesteps the
-     unresolved issue and matches how most of this file already colors
-     things (e.g. .badge-* below never used a variable for its colors
-     either). */
-
-  /* A29 fix - diagnosed against a real user report ("I can read my
-     desktop through it") by diffing A28->A29 (git diff 3cdec19 8987e51
-     -- ui/style.css) and checking [ui].panel_opacity in cortana.toml:
-     neither #frame's own background rule nor the config value changed -
-     A29 never reduced actual opacity anywhere (the titlebar and tab
-     strip actually got MORE opaque). The real cause: A29's chrome/nav
-     zones became visibly more solid, which by contrast made content
-     zones - which had NO background of their own at all before this,
-     just raw text over #frame's 0.82-alpha blur - read as more
-     see-through than they used to, even though nothing about them
-     changed. Fix is scoped exactly per instruction: #frame's own base
-     translucency and the chrome (titlebar/tabs) are untouched - only
-     the actual reading surfaces (list containers, cards, bubbles, the
-     hint box, chips) get a real, separate, opaque fill so text doesn't
-     sit directly on the blur anymore. Went to fully opaque (alpha 1),
-     not just near-opaque - tested against a real bright/busy background
-     (VS Code's syntax-highlighted text, not just the dark wallpaper
-     used for the depth-pass screenshots), 0.88 and then 0.97 both still
-     let legible ghosted text bleed through; only full opacity read as
-     "solid" against real desktop content, which is what "read without
-     effort" actually requires. */
 }
 
 * { box-sizing: border-box; }
@@ -115,67 +59,153 @@ html, body {
 body {
   font-family: "Segoe UI", -apple-system, sans-serif;
   font-size: 13px;
-  line-height: 1.45; /* A28: comfortable leading for prose (conversation, hints) - dense list rows below tighten their own */
-  color: #d3ecf5;
+  line-height: 1.45;
+  color: #eceff1;
 }
 
 #frame {
   height: 100vh;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid rgba(var(--accent-rgb), 0.45);
-  border-radius: 10px;
+  display: flex; /* A30: row now, not column - sidebar + main column side by side */
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
   overflow: hidden;
-  /* A29: the accent glow alone (kept) read as ambient light, not weight -
-     added a real black drop shadow so the whole panel looks like it's
-     physically lifted off the desktop behind it, the way a window
-     actually should. */
-  box-shadow: 0 0 24px rgba(var(--accent-rgb), 0.18), inset 0 0 40px rgba(var(--accent-rgb), 0.04),
-    0 30px 70px -20px rgba(0, 0, 0, 0.65);
+  box-shadow: 0 30px 70px -20px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(0, 0, 0, 0.3);
   background: rgba(var(--base-rgb), var(--panel-opacity));
   backdrop-filter: blur(var(--blur-px));
   -webkit-backdrop-filter: blur(var(--blur-px));
 }
 
-/* ---- title bar (frameless - custom drag region + window controls) ---- */
+/* ==== sidebar (A30: replaces the old top tab strip - persistent nav
+   rail, always visible, the structural "where am I / where can I go"
+   answer apple-design SS16 calls out explicitly). Heaviest material in
+   the stack, opaque - it's chrome, not content, but it's also the thing
+   that has to stay legible regardless of what's behind the window, so it
+   gets the same opaque + isolate treatment content surfaces do. ==== */
+#sidebar {
+  width: 168px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: rgba(5, 6, 8, 0.97);
+  isolation: isolate;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+#sidebar-brand {
+  -webkit-app-region: drag;
+  height: 52px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+#titlebar-glyph {
+  color: var(--accent);
+  font-size: 18px;
+  text-shadow: 0 0 10px rgba(var(--accent-rgb), 0.8);
+}
+
+#sidebar-nav {
+  position: relative;
+  flex: 1;
+  padding: var(--space-2) 0;
+}
+.tab-btn {
+  -webkit-app-region: no-drag;
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #8b949e;
+  padding: 12px var(--space-4) 12px 18px;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  transition: color 160ms var(--ease-out);
+}
+.tab-btn:hover { color: #d7dce1; }
+.tab-btn.active { color: #f2f5f7; font-weight: 600; }
+/* A28/A30: a real sliding indicator (renderer.ts positions this on tab
+   click/load) instead of each button drawing its own static mark -
+   spatial consistency (apple-design §7): the mark visibly travels from
+   the old item to the new one instead of teleporting. A30 reoriented
+   this from a horizontal underline to a vertical left-edge bar (the
+   sidebar-nav convention every pro dev tool uses - VS Code's activity
+   bar, Linear's nav) - renderer.ts now positions it via offsetTop/height
+   instead of offsetLeft/width; still occasional, user-initiated motion
+   only, never continuous. */
+#tab-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+  box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.8);
+  transition: transform 220ms var(--ease-out), height 220ms var(--ease-out);
+  will-change: transform;
+}
+
+#sidebar-footer {
+  flex-shrink: 0;
+  padding: var(--space-3);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ---- model badge ---- */
+.badge {
+  display: block;
+  padding: 6px var(--space-2);
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: center;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 220ms var(--ease-out), background-color 220ms var(--ease-out), border-color 220ms var(--ease-out);
+}
+.badge-active { color: #3ddc84; background: rgba(61, 220, 132, 0.1); }
+.badge-idle { color: #f2b33d; background: rgba(242, 179, 61, 0.1); }
+.badge-unknown { color: #ff5c5c; background: rgba(255, 92, 92, 0.1); }
+
+/* ==== main column (A30: titlebar + tab content, to the right of the
+   sidebar) ==== */
+#main-column {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* A30: slimmer than A28/A29's titlebar - identity now lives in the
+   sidebar glyph, so this strip's only jobs are the drag region and
+   window controls. */
 #titlebar {
   -webkit-app-region: drag;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 var(--space-2) 0 var(--space-4);
-  height: 38px;
+  height: 34px;
   flex-shrink: 0;
-  /* A29: chrome is the heaviest material in the stack (apple-design
-     SS12) - darkened and given its own cast shadow so it visibly sits
-     ABOVE the tab strip and content, rather than being the same flat
-     plane with just a 1px line under it. */
-  background: linear-gradient(to bottom, rgba(2, 5, 9, 0.55), rgba(57, 230, 255, 0.05));
-  border-bottom: 1px solid rgba(var(--accent-rgb), 0.3);
-  box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.5);
-  position: relative;
-  z-index: 2;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
-
-#titlebar-drag {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex: 1;
-  min-width: 0;
-}
-
-#titlebar-glyph {
-  color: var(--accent);
-  font-size: 15px;
-  text-shadow: 0 0 8px rgba(var(--accent-rgb), 0.9);
-}
-
+#titlebar-drag { flex: 1; min-width: 0; }
 #titlebar-title {
-  font-size: 12px;
+  font-size: 10.5px;
   font-weight: 600;
-  letter-spacing: 0.12em; /* small text: positive tracking is correct (apple-design) - kept, it's the sci-fi-label identity, not a mistake */
-  color: #bfe9f5;
+  letter-spacing: 0.14em;
+  color: #6b7680;
   white-space: nowrap;
 }
 
@@ -183,124 +213,28 @@ body {
   -webkit-app-region: no-drag;
   display: flex;
   gap: 2px;
-  margin-left: var(--space-3);
 }
-
 .win-btn {
   -webkit-app-region: no-drag;
-  width: 30px;
-  height: 26px;
+  width: 28px;
+  height: 24px;
   border: none;
   background: transparent;
-  color: #9fd3e0;
+  color: #8b949e;
   font-size: 12px;
   cursor: pointer;
   border-radius: 4px;
   line-height: 1;
   transition: background-color 140ms var(--ease-out), color 140ms var(--ease-out), transform 100ms var(--ease-out);
 }
-.win-btn:hover { background: rgba(var(--accent-rgb), 0.18); color: var(--accent); }
-/* A28: press feedback (emil-design-eng "buttons must feel responsive") -
-   a discrete click, not continuous data, so it's exactly the kind of
-   motion constraint #2 allows. Subtle on purpose (0.94, not 0.8) - these
-   are 26px window-chrome buttons, not primary actions. */
+.win-btn:hover { background: rgba(255, 255, 255, 0.08); color: #eceff1; }
 .win-btn:active { transform: scale(0.94); }
 .win-btn-close:hover { background: #c0304a; color: #fff; }
 
-/* ---- model badge (big visible active-model indicator) ---- */
-.badge {
-  -webkit-app-region: no-drag;
-  padding: var(--space-1) var(--space-3);
-  border-radius: 3px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  border: 1px solid currentColor;
-  white-space: nowrap;
-  /* A28: state-indication transition (emil-design-eng's valid-purpose
-     list) - the badge changes state occasionally (model load/unload),
-     never continuously, so a smooth color settle instead of an instant
-     snap is a legitimate transition, not noise. */
-  transition: color 220ms var(--ease-out), background-color 220ms var(--ease-out), border-color 220ms var(--ease-out);
-}
-.badge-active { color: #6bffb0; background: rgba(107, 255, 176, 0.08); text-shadow: 0 0 6px rgba(107,255,176,0.6); }
-.badge-idle { color: #e2c67e; background: rgba(226, 198, 126, 0.08); }
-.badge-unknown { color: #e2807e; background: rgba(226, 128, 126, 0.08); }
-
-/* ---- tabs ----
-   A29: this is the nav zone - one material tier below the titlebar chrome,
-   one above content, so it needs to read as a recessed groove between the
-   two rather than another flat stripe. inset shadow on the strip itself;
-   the active tab gets its own raised chip (background fill, not just a
-   colored label) so "where am I" is answerable at a glance, not just on
-   close reading of text color (apple-design SS16 wayfinding). */
-#tabs {
-  -webkit-app-region: no-drag;
-  position: relative;
-  display: flex;
-  flex-shrink: 0;
-  gap: 2px;
-  background: rgba(0, 0, 0, 0.22);
-  border-bottom: 1px solid rgba(var(--accent-rgb), 0.22);
-  box-shadow: inset 0 2px 6px -2px rgba(0, 0, 0, 0.45);
-  padding: var(--space-1) var(--space-2);
-}
-.tab-btn {
-  position: relative;
-  z-index: 1;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  color: #7fa6b3;
-  padding: 7px var(--space-4);
-  cursor: pointer;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  transition: color 160ms var(--ease-out);
-}
-.tab-btn:hover { color: #d3ecf5; }
-.tab-btn.active {
-  color: var(--accent);
-  text-shadow: 0 0 6px rgba(var(--accent-rgb), 0.7);
-}
-/* A28/A29: a real sliding indicator (renderer.ts positions this on tab
-   click/load) instead of each button drawing its own static underline -
-   spatial consistency (apple-design §7): the accent visibly travels from
-   the old tab to the new one instead of teleporting, so switching tabs
-   reads as moving through the panel, not swapping two unrelated states.
-   Tab switches are occasional (a user-initiated click), never continuous
-   - exactly the tier constraint #2 allows animation on. A29: widened
-   from a 2px underline into a full raised chip behind the active label
-   (same renderer.ts left/width math, just filled instead of a hairline)
-   - the active tab now has real material presence, not just a tinted
-   border. */
-#tab-indicator {
-  position: absolute;
-  top: var(--space-1);
-  bottom: var(--space-1);
-  border-radius: 6px;
-  background: rgba(var(--accent-rgb), 0.14);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14);
-  transition: transform 220ms var(--ease-out), width 220ms var(--ease-out);
-  will-change: transform;
-}
-
 main { flex: 1; overflow: hidden; display: flex; }
-.tab-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; padding: var(--space-3); }
+.tab-panel { display: none; flex: 1; flex-direction: column; overflow: hidden; padding: var(--space-4); }
 .tab-panel.active { display: flex; }
-/* A29: content is the lightest material tier (apple-design SS12) - a
-   static top-left radial glow gives the panel itself some depth instead
-   of a completely flat fill, without competing with anything raised on
-   top of it. Static, not motion - no interval/transition, so it never
-   touches the "no new motion" constraint. */
-.panel-glass {
-  position: relative;
-  background: radial-gradient(ellipse 900px 460px at 15% -15%, rgba(var(--accent-rgb), 0.06), transparent 60%);
-}
-/* A28: tab content gets a short settle-in, not a restart-from-nothing
-   entrance - occasional (one per tab click), purpose is "preventing
-   jarring changes" (emil-design-eng's valid-purpose list), not decoration.
-   Starts from 0.98/translateY(4px), never scale(0) or a hard cut. */
+.panel-glass { position: relative; }
 .tab-panel.active {
   animation: tab-settle 200ms var(--ease-out);
 }
@@ -310,31 +244,31 @@ main { flex: 1; overflow: hidden; display: flex; }
 }
 
 .hint {
-  margin: 0 0 var(--space-2) 0;
-  padding: 7px 11px;
-  background: rgba(5, 9, 14, 1); /* A29 fix: was 0.06 accent alpha - direct text needs a real backing, not a tint */
-  isolation: isolate; /* A29 fix: see .scroll-list's comment - needed for a genuinely opaque paint under #frame's backdrop-filter */
-  border: 1px solid rgba(var(--accent-rgb), 0.2);
+  margin: 0 0 var(--space-3) 0;
+  padding: 9px 12px;
+  background: rgba(5, 9, 14, 1);
+  isolation: isolate;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 2px solid var(--accent);
   border-radius: 4px;
-  color: #9cc3cf; /* A28: brightened from #8fb9c6 - muted text loses contrast fastest over a blurred translucent surface (apple-design "vibrancy") */
+  color: #9aa4ad;
   font-size: 11.5px;
   line-height: 1.5;
 }
 .hint code { color: var(--accent); }
 
-/* A29: a small accent tick in front of the label (apple-design SS16
-   grouping/wayfinding) - a section label is a structural divider, not
-   just another line of muted text, so it gets a static visual marker
-   instead of relying on color alone to say so. */
+/* A30: a small accent tick in front of the label (apple-design SS16
+   grouping/wayfinding) - a structural divider, not just muted text. */
 .section-label {
   display: flex;
   align-items: center;
   gap: 6px;
   font-size: 10.5px;
-  letter-spacing: 0.12em;
-  color: #8bb3c0; /* A28/A29: brightened further from #7ea3b0 - now sits next to a visible marker, needs to hold its own */
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: #8b949e;
   text-transform: uppercase;
-  margin: 10px 0 6px 2px;
+  margin: var(--space-3) 0 var(--space-2) 2px;
 }
 .section-label::before {
   content: "";
@@ -342,82 +276,67 @@ main { flex: 1; overflow: hidden; display: flex; }
   height: 11px;
   border-radius: 2px;
   background: var(--accent);
-  box-shadow: 0 0 5px rgba(var(--accent-rgb), 0.7);
   flex-shrink: 0;
 }
 
-/* A29 fix: the actual reading surface gets a real near-opaque fill of
-   its own - previously .scroll-list had none at all, so every row (the
-   log feed especially) sat directly on #frame's translucent blur. This
-   is the main fix for "I can read my desktop through it": the frame's
-   own edge/chrome translucency (untouched) still shows around this
-   block, but the block itself - where the actual live data lives - is
-   solid enough to read without effort. */
+/* A30: the real reading surface, opaque - see docs/history/ui-opacity-fix.md
+   for why this is a plain literal fill + isolation:isolate rather than a
+   CSS custom property. */
 .scroll-list {
   flex: 1;
   overflow-y: auto;
-  line-height: 1.3; /* A28: tighter leading for dense list rows, vs. body's 1.45 for prose */
+  line-height: 1.3;
   background: rgba(5, 9, 14, 1);
-  border-radius: 8px;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14);
-  /* A29 fix: even at alpha 1, a faint trace of whatever's behind #frame
-     still showed through here - #frame's own backdrop-filter: blur()
-     appears to composite against this element in a way plain paint
-     order doesn't fully predict. isolation:isolate forces this onto its
-     own stacking context so it paints as a genuinely opaque layer,
-     independent of the ancestor's backdrop sampling. */
   isolation: isolate;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 6px;
 }
 .scroll-list::-webkit-scrollbar { width: 8px; }
-.scroll-list::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb), 0.35); border-radius: 4px; }
+.scroll-list::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 4px; }
 .scroll-list::-webkit-scrollbar-track { background: transparent; }
 
-/* ---- conversation ----
-   A29: real elevation (--elevate-sm, was a flat 1px border + flat fill)
-   plus a corner "tail" so each bubble stays visually anchored to the
-   side it's already on (apple-design §7 spatial consistency - a bubble
-   should look like it belongs to the edge it's pinned to, not just be
-   positioned there). Static per-role tint, no new motion. */
+/* ---- conversation ---- */
 .turn {
   padding: var(--space-2) 11px;
-  margin-bottom: 9px;
+  margin: 9px;
+  margin-bottom: 0;
   border-radius: 10px;
   max-width: 78%;
-  border: 1px solid rgba(var(--accent-rgb), 0.18);
-  background: rgba(5, 9, 14, 1); /* A29 fix: was 0.05 accent alpha (near-invisible fill) - bubbles now read as solid chips, not tinted glass */
-  isolation: isolate; /* A29 fix: see .scroll-list's comment */
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(20, 22, 25, 1);
+  isolation: isolate;
   line-height: 1.45;
 }
+.turn:first-child { margin-top: 9px; }
+.turn:last-child { margin-bottom: 9px; }
 .turn.user {
   margin-left: auto;
-  border-color: rgba(var(--accent-rgb), 0.35);
-  background: rgba(13, 32, 40, 1); /* A29 fix: was a low-alpha gradient - solid accent-tinted fill keeps user/assistant distinguishable without losing legibility */
-  border-bottom-right-radius: 2px; /* tail toward the edge it's anchored to */
+  border-color: rgba(var(--accent-rgb), 0.3);
+  background: rgba(11, 28, 34, 1);
+  border-bottom-right-radius: 2px;
 }
 .turn.assistant {
   margin-right: auto;
   border-bottom-left-radius: 2px;
 }
-.turn-meta { font-size: 10px; letter-spacing: 0.05em; color: #7ea3b0; margin-bottom: 3px; text-transform: uppercase; }
+.turn-meta { font-size: 10px; letter-spacing: 0.05em; color: #6b7680; margin-bottom: 3px; text-transform: uppercase; }
 
 /* ---- event feed rows (tools/activity, latency raw) ----
-   A28: deliberately NO enter/insert animation here. These rows append
-   many times a second during real activity (constraint #2, stated
-   explicitly) - any per-row motion becomes noise almost immediately.
-   font-variant-numeric below is NOT animation, it's static layout: fixed-
-   width digits so a changing number doesn't visibly reflow next to it. */
+   A28/A30: deliberately NO enter/insert animation - these rows append
+   many times a second during real activity, any per-row motion becomes
+   noise almost immediately. font-variant-numeric is static layout, not
+   animation: fixed-width digits so a changing number doesn't reflow. */
 .event-row {
   padding: 5px 9px;
-  border-bottom: 1px solid rgba(var(--accent-rgb), 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 11.5px;
   font-variant-numeric: tabular-nums;
-  color: #b9dbe6;
+  color: #c3cad0;
 }
-.event-row .ok { color: #6bffb0; }
-.event-row .fail { color: #ff7a8a; }
-.event-row .ts { color: #7196a1; margin-right: 7px; } /* A28: brightened from #5f8894 */
+.event-row .ok { color: #3ddc84; }
+.event-row .fail { color: #ff5c5c; }
+.event-row .ts { color: #6b7680; margin-right: 7px; }
 .event-row .src { color: var(--accent); margin-right: 7px; }
 .event-row.daemon .src { color: #b98bff; }
 
@@ -425,58 +344,50 @@ main { flex: 1; overflow: hidden; display: flex; }
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 .timer-chip {
   padding: 4px 9px;
   border: 1px solid rgba(var(--accent-rgb), 0.35);
   border-radius: 12px;
   font-size: 11px;
-  font-variant-numeric: tabular-nums; /* A28: the countdown digit shouldn't reflow the chip width as it ticks down */
+  font-variant-numeric: tabular-nums;
   color: var(--accent);
-  background: rgba(13, 32, 40, 1); /* A29 fix: was 0.07 accent alpha */
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14); /* A29 */
+  background: rgba(13, 32, 40, 1);
+  isolation: isolate;
 }
 
 /* ---- latency ----
-   A28: no update-triggered animation on .big/.value - these change every
-   turn (constraint #2, stated explicitly). tabular-nums is the one
-   typographic change: it stabilizes digit width so a value like "681ms"
-   becoming "1204ms" doesn't visibly shove neighboring text, without it
-   being motion at all.
-
-   A29: this is the hero/secondary split (apple-design SS16 "build
-   hierarchy from weight + size + leading as a set, not size alone") -
-   .derived-readout is the ONE number a glance needs (first audio out,
-   corrected for double-counting - see CLAUDE.md's latency budget); the
-   .card grid below is supporting per-stage detail. Before this pass both
-   used nearly the same border/glow/radius and read as equally important.
-   Still zero motion added to either - only static size/shadow/type
-   weight, same "no new motion on the latency numbers" constraint as A28. */
+   A28/A30: no update-triggered animation on .big/.value - these change
+   every turn. tabular-nums stabilizes digit width so a value like
+   "681ms" becoming "1204ms" doesn't visibly shove neighboring text,
+   without it being motion at all. This is still the hero/secondary
+   split A29 established (apple-design SS16 "build hierarchy from
+   weight + size + leading as a set") - .derived-readout is the one
+   number a glance needs; .card grid is supporting detail - now
+   expressed as flat instrument-panel structure (a full-width strip,
+   sharp corners) instead of a glowing card, matching the rest of this
+   pass's direction. */
 .derived-readout {
-  padding: var(--space-4) 18px;
+  padding: var(--space-4) var(--space-5);
   margin-bottom: var(--space-4);
-  border: 1px solid rgba(var(--accent-rgb), 0.45);
-  border-radius: 10px;
-  /* A29 fix: layered on top of a solid --content-fill-accent base (was
-     a 0.04-0.1 alpha gradient alone, which read as barely-there over a
-     busy desktop) - the gradient stays for the "light source" depth
-     cue, the solid layer under it is what actually makes the hero
-     number legible. */
-  background: radial-gradient(ellipse at top left, rgba(var(--accent-rgb), 0.14), transparent 70%), rgba(13, 32, 40, 1);
-  isolation: isolate; /* A29 fix: see .scroll-list's comment */
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 14px 32px -10px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(57, 230, 255, 0.22), 0 0 40px -8px rgba(57, 230, 255, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(13, 32, 40, 1);
+  isolation: isolate;
+  box-shadow: 0 10px 24px -10px rgba(0, 0, 0, 0.5);
 }
 .derived-readout .big {
-  font-size: 34px;
+  font-size: 40px;
   font-weight: 700;
   font-family: ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em; /* A28: large display text wants negative tracking (apple-design §15) */
+  letter-spacing: -0.02em;
 }
-.derived-readout .big.over { color: #ff7a8a; }
-.derived-readout .big.ok { color: #6bffb0; }
-.derived-readout .sub { font-size: 11px; color: #9cc3cf; margin-top: 3px; line-height: 1.4; }
+.derived-readout .big.over { color: #ff5c5c; }
+.derived-readout .big.ok { color: #3ddc84; }
+.derived-readout .sub { font-size: 11px; color: #9aa4ad; margin-top: 4px; line-height: 1.4; }
 
 .card-grid {
   display: grid;
@@ -485,14 +396,13 @@ main { flex: 1; overflow: hidden; display: flex; }
   margin-bottom: 6px;
 }
 .card {
-  background: rgba(5, 9, 14, 1); /* A29 fix: was 0.05 accent alpha */
-  isolation: isolate; /* A29 fix: see .scroll-list's comment */
-  border: 1px solid rgba(var(--accent-rgb), 0.22);
+  background: rgba(5, 9, 14, 1);
+  isolation: isolate;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 6px;
   padding: 9px 11px;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14); /* A29: real but deliberately smaller than the hero's --elevate-lg - the shadow tier itself is part of the hierarchy signal */
 }
-.card .label { font-size: 10.5px; color: #85acb9; letter-spacing: 0.04em; text-transform: uppercase; } /* A28: brightened from #7fa6b3 */
+.card .label { font-size: 10.5px; color: #8b949e; letter-spacing: 0.04em; text-transform: uppercase; }
 .card .value {
   font-size: 19px;
   font-weight: 700;
@@ -500,42 +410,35 @@ main { flex: 1; overflow: hidden; display: flex; }
   font-family: ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
+  color: #eceff1;
 }
-.card .value.status-OK { color: #6bffb0; }
-.card .value.status-OVER { color: #ff7a8a; }
-.card .target { font-size: 10px; color: #7196a1; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.card .value.status-OK { color: #3ddc84; }
+.card .value.status-OVER { color: #ff5c5c; }
+.card .target { font-size: 10px; color: #6b7680; margin-top: 2px; font-variant-numeric: tabular-nums; }
 
 /* ---- memory ----
-   A29: sessions (left) is the nav/selector for entries (right) - same
-   material-weight logic as the tab strip (apple-design SS12): the
-   picker reads darker/heavier, the thing it's picking from reads
-   lighter, so which column is "control" vs "content" is visible before
-   reading a single label. */
+   A30: sessions (nav/picker) reads heavier than entries (content) -
+   same material-weight logic as the sidebar itself. */
 #memory-body { flex: 1; display: flex; gap: 10px; overflow: hidden; }
-.col { flex: 1; border: 1px solid rgba(var(--accent-rgb), 0.18); border-radius: 8px; padding: 4px; }
-/* A29 fix: both columns are real reading surfaces (a session list, an
-   entry list) - .material-recess/0.02 alpha were both far too close to
-   transparent to read over a busy desktop. Sessions (nav) stays
-   perceptibly heavier than entries (content), same split as before,
-   just both now solid enough to actually read. */
-#memory-sessions { background: rgba(2, 4, 7, 1); box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.3); isolation: isolate; }
+.col { flex: 1; border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 6px; padding: 4px; }
+#memory-sessions { background: rgba(2, 4, 7, 1); isolation: isolate; }
 #memory-entries { background: rgba(5, 9, 14, 1); isolation: isolate; }
 
 .session-row, .entry-row {
-  padding: 7px 9px;
-  border-bottom: 1px solid rgba(var(--accent-rgb), 0.1);
+  padding: 8px 9px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   cursor: pointer;
   font-size: 11.5px;
-  transition: background-color 150ms var(--ease-out); /* A28: hover/select is a discrete pointer state, not continuous data */
+  transition: background-color 150ms var(--ease-out);
 }
-.session-row:hover, .entry-row:hover { background: rgba(var(--accent-rgb), 0.07); }
-.session-row.selected { background: rgba(var(--accent-rgb), 0.14); }
+.session-row:hover, .entry-row:hover { background: rgba(255, 255, 255, 0.04); }
+.session-row.selected { background: rgba(var(--accent-rgb), 0.12); border-left: 2px solid var(--accent); }
 .entry-row .role { color: var(--accent); margin-right: 7px; font-weight: 700; }
 .entry-row .entry-actions { float: right; }
 .entry-row .entry-actions button {
   background: none;
-  border: 1px solid rgba(var(--accent-rgb), 0.3);
-  color: #9fd3e0;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #9aa4ad;
   border-radius: 3px;
   font-size: 10px;
   padding: 1px 6px;
@@ -544,12 +447,9 @@ main { flex: 1; overflow: hidden; display: flex; }
   transition: color 140ms var(--ease-out), border-color 140ms var(--ease-out), transform 100ms var(--ease-out);
 }
 .entry-row .entry-actions button:hover { color: var(--accent); border-color: var(--accent); }
-.entry-row .entry-actions button:active { transform: scale(0.94); } /* A28: same discrete press feedback as .win-btn */
-.entry-row .entry-actions .danger:hover { color: #ff7a8a; border-color: #ff7a8a; }
+.entry-row .entry-actions button:active { transform: scale(0.94); }
+.entry-row .entry-actions .danger:hover { color: #ff5c5c; border-color: #ff5c5c; }
 
-/* A28: the edit textarea is a genuine state change (view -> edit), not
-   continuous data - a short settle-in instead of an instant swap, same
-   "preventing jarring changes" purpose as the tab entrance above. */
 .entry-edit {
   animation: tab-settle 180ms var(--ease-out);
 }
@@ -558,7 +458,7 @@ main { flex: 1; overflow: hidden; display: flex; }
   min-height: 60px;
   background: rgba(0,0,0,0.3);
   border: 1px solid var(--accent);
-  color: #d3ecf5;
+  color: #eceff1;
   border-radius: 4px;
   padding: 6px;
   font-size: 11.5px;
@@ -567,12 +467,6 @@ main { flex: 1; overflow: hidden; display: flex; }
   resize: vertical;
 }
 
-/* A28: deletion is a real, occasional state change the user just
-   triggered (clicked "delete", confirmed a dialog) - collapsing smoothly
-   instead of vanishing instantly is "preventing jarring changes," the
-   same valid purpose as everything else here. renderer.ts adds this
-   class, waits for the transition, then removes the element - never an
-   instant .remove(). */
 .entry-row.removing {
   opacity: 0;
   transform: scale(0.98);
@@ -586,10 +480,6 @@ main { flex: 1; overflow: hidden; display: flex; }
     margin 200ms var(--ease-out) 40ms, border-width 200ms var(--ease-out) 40ms;
 }
 
-/* A28: respect prefers-reduced-motion - cross-fade only, no
-   movement/scale, per apple-design §14. The log feed and latency numbers
-   were never animated in the first place, so most of this app needs no
-   change; this covers the transitions actually added above. */
 @media (prefers-reduced-motion: reduce) {
   .tab-panel.active { animation: none; }
   .entry-edit { animation: none; }
