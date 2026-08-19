@@ -526,6 +526,32 @@ A8's tool-calling demands first, see Done below)
   process isn't per-monitor-DPI-aware (fixed by using `SW_MAXIMIZE`, which lets
   Windows/Electron compute the correct bounds internally instead of guessing
   coordinates from outside). [docs/history/ui-depth-pass.md](docs/history/ui-depth-pass.md)
+- **UI opacity fix, A29 follow-up (ad hoc, not a PROMPTS.md phase)** — real user
+  report: "I can read my desktop through it." Diagnosed before changing anything, per
+  explicit instruction: `git diff` of A28→A29 plus checking `[ui].panel_opacity`/
+  `blur_px` in `cortana.toml` confirmed neither `#frame`'s own opacity nor the config
+  changed — the depth pass's heavier chrome/nav material actually made those zones
+  *more* opaque, which by contrast made the content zones (which never had a
+  background of their own, just raw text on the blur) read as more see-through than
+  before. Fix scoped exactly per instruction: `#frame`'s base translucency and the
+  chrome stayed untouched; only the actual reading surfaces (list containers, cards,
+  bubbles, the hint box, chips) got a real, fully opaque fill. Two real bugs found
+  getting there: every CSS custom property added in this session's edits silently
+  failed to resolve in the live app (confirmed via Playwright's CDP connection —
+  `getComputedStyle` returned empty for all of them despite the file being verified
+  byte-correct on disk, cache-disabled reloads, and direct style injection all still
+  failing; root cause not found in a reasonable budget, worked around with literal
+  `rgba()` values everywhere instead), and `#frame`'s `backdrop-filter: blur()` still
+  let a faint non-legible trace through even a fully opaque child until
+  `isolation: isolate` was added. Verified against a real bright/busy background (VS
+  Code's own syntax-highlighted text), not just the dark wallpaper the depth-pass
+  screenshots used — that wallpaper turned out to be a poor test case since a
+  near-black translucent layer over a near-black background looks solid regardless of
+  actual alpha. Flagged honestly: some of this verification used a topmost window
+  positioned over the user's primary monitor and was caught mid-test actively
+  overlaying the user's own live work — stopped immediately once noticed, remaining
+  verification restricted to the confirmed-empty secondary monitor.
+  [docs/history/ui-opacity-fix.md](docs/history/ui-opacity-fix.md)
 
 **Next**: A16/A17 (camera/ambient awareness) are the next fully-untouched phase
 after A22/A23 wrap. A5b

@@ -57,20 +57,50 @@
      surface's own top edge ("light catching the material"). The old
      design only had an accent-colored glow, which reads as a light
      SOURCE, not a raised layer - nothing actually looked like it was
-     sitting above anything else. Two tiers: -sm for ordinary raised
-     chips (cards, turns, chips), -lg for the one hero element per view
-     (the derived latency readout) - the size difference between the two
-     tiers is itself a hierarchy signal, not just decoration. */
-  --edge-highlight: rgba(255, 255, 255, 0.07);
-  --elevate-sm: 0 1px 0 var(--edge-highlight) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(var(--accent-rgb), 0.14);
-  --elevate-lg: 0 1px 0 var(--edge-highlight) inset, 0 14px 32px -10px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(var(--accent-rgb), 0.22), 0 0 40px -8px rgba(var(--accent-rgb), 0.25);
+     sitting above anything else. Two tiers: a smaller one for ordinary
+     raised chips (cards, turns, chips), a larger one for the one hero
+     element per view (the derived latency readout) - the size
+     difference between the two tiers is itself a hierarchy signal, not
+     just decoration.
 
-  /* Material weight (A29, apple-design SS12) - chrome/nav zones are
-     darker and heavier than content zones, so the eye reads structure
-     before it reads any single value. Content itself stays lighter so
-     nothing competes with the data. */
-  --material-chrome: rgba(2, 5, 9, 0.55);
-  --material-recess: rgba(0, 0, 0, 0.22);
+     A29 fix, same investigation below: this used to be two custom
+     properties (--elevate-sm/--elevate-lg) referenced via var() at
+     every call site. Every new custom property added in this session -
+     these, --material-chrome/-recess, --content-fill/-accent - reliably
+     failed to resolve in the live app (confirmed via computed-style
+     inspection: getComputedStyle(document.documentElement) returned ''
+     for all of them, while --accent-rgb/--panel-opacity/--blur-px,
+     defined a few lines above and untouched by this session, resolved
+     correctly every time) despite being syntactically valid and present
+     in the loaded stylesheet. Root cause not resolved within a
+     reasonable debugging budget - inlined as literal values at every
+     call site instead (search style.css for "rgba(255, 255, 255, 0.07)
+     inset" to find every raised surface), which sidesteps the
+     unresolved issue and matches how most of this file already colors
+     things (e.g. .badge-* below never used a variable for its colors
+     either). */
+
+  /* A29 fix - diagnosed against a real user report ("I can read my
+     desktop through it") by diffing A28->A29 (git diff 3cdec19 8987e51
+     -- ui/style.css) and checking [ui].panel_opacity in cortana.toml:
+     neither #frame's own background rule nor the config value changed -
+     A29 never reduced actual opacity anywhere (the titlebar and tab
+     strip actually got MORE opaque). The real cause: A29's chrome/nav
+     zones became visibly more solid, which by contrast made content
+     zones - which had NO background of their own at all before this,
+     just raw text over #frame's 0.82-alpha blur - read as more
+     see-through than they used to, even though nothing about them
+     changed. Fix is scoped exactly per instruction: #frame's own base
+     translucency and the chrome (titlebar/tabs) are untouched - only
+     the actual reading surfaces (list containers, cards, bubbles, the
+     hint box, chips) get a real, separate, opaque fill so text doesn't
+     sit directly on the blur anymore. Went to fully opaque (alpha 1),
+     not just near-opaque - tested against a real bright/busy background
+     (VS Code's syntax-highlighted text, not just the dark wallpaper
+     used for the depth-pass screenshots), 0.88 and then 0.97 both still
+     let legible ghosted text bleed through; only full opacity read as
+     "solid" against real desktop content, which is what "read without
+     effort" actually requires. */
 }
 
 * { box-sizing: border-box; }
@@ -120,7 +150,7 @@ body {
      SS12) - darkened and given its own cast shadow so it visibly sits
      ABOVE the tab strip and content, rather than being the same flat
      plane with just a 1px line under it. */
-  background: linear-gradient(to bottom, var(--material-chrome), rgba(var(--accent-rgb), 0.05));
+  background: linear-gradient(to bottom, rgba(2, 5, 9, 0.55), rgba(57, 230, 255, 0.05));
   border-bottom: 1px solid rgba(var(--accent-rgb), 0.3);
   box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.5);
   position: relative;
@@ -210,7 +240,7 @@ body {
   display: flex;
   flex-shrink: 0;
   gap: 2px;
-  background: var(--material-recess);
+  background: rgba(0, 0, 0, 0.22);
   border-bottom: 1px solid rgba(var(--accent-rgb), 0.22);
   box-shadow: inset 0 2px 6px -2px rgba(0, 0, 0, 0.45);
   padding: var(--space-1) var(--space-2);
@@ -250,7 +280,7 @@ body {
   bottom: var(--space-1);
   border-radius: 6px;
   background: rgba(var(--accent-rgb), 0.14);
-  box-shadow: var(--elevate-sm);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14);
   transition: transform 220ms var(--ease-out), width 220ms var(--ease-out);
   will-change: transform;
 }
@@ -282,7 +312,8 @@ main { flex: 1; overflow: hidden; display: flex; }
 .hint {
   margin: 0 0 var(--space-2) 0;
   padding: 7px 11px;
-  background: rgba(var(--accent-rgb), 0.06);
+  background: rgba(5, 9, 14, 1); /* A29 fix: was 0.06 accent alpha - direct text needs a real backing, not a tint */
+  isolation: isolate; /* A29 fix: see .scroll-list's comment - needed for a genuinely opaque paint under #frame's backdrop-filter */
   border: 1px solid rgba(var(--accent-rgb), 0.2);
   border-radius: 4px;
   color: #9cc3cf; /* A28: brightened from #8fb9c6 - muted text loses contrast fastest over a blurred translucent surface (apple-design "vibrancy") */
@@ -315,7 +346,28 @@ main { flex: 1; overflow: hidden; display: flex; }
   flex-shrink: 0;
 }
 
-.scroll-list { flex: 1; overflow-y: auto; line-height: 1.3; } /* A28: tighter leading for dense list rows, vs. body's 1.45 for prose */
+/* A29 fix: the actual reading surface gets a real near-opaque fill of
+   its own - previously .scroll-list had none at all, so every row (the
+   log feed especially) sat directly on #frame's translucent blur. This
+   is the main fix for "I can read my desktop through it": the frame's
+   own edge/chrome translucency (untouched) still shows around this
+   block, but the block itself - where the actual live data lives - is
+   solid enough to read without effort. */
+.scroll-list {
+  flex: 1;
+  overflow-y: auto;
+  line-height: 1.3; /* A28: tighter leading for dense list rows, vs. body's 1.45 for prose */
+  background: rgba(5, 9, 14, 1);
+  border-radius: 8px;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14);
+  /* A29 fix: even at alpha 1, a faint trace of whatever's behind #frame
+     still showed through here - #frame's own backdrop-filter: blur()
+     appears to composite against this element in a way plain paint
+     order doesn't fully predict. isolation:isolate forces this onto its
+     own stacking context so it paints as a genuinely opaque layer,
+     independent of the ancestor's backdrop sampling. */
+  isolation: isolate;
+}
 .scroll-list::-webkit-scrollbar { width: 8px; }
 .scroll-list::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb), 0.35); border-radius: 4px; }
 .scroll-list::-webkit-scrollbar-track { background: transparent; }
@@ -332,14 +384,15 @@ main { flex: 1; overflow: hidden; display: flex; }
   border-radius: 10px;
   max-width: 78%;
   border: 1px solid rgba(var(--accent-rgb), 0.18);
-  background: rgba(var(--accent-rgb), 0.05);
-  box-shadow: var(--elevate-sm);
+  background: rgba(5, 9, 14, 1); /* A29 fix: was 0.05 accent alpha (near-invisible fill) - bubbles now read as solid chips, not tinted glass */
+  isolation: isolate; /* A29 fix: see .scroll-list's comment */
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14);
   line-height: 1.45;
 }
 .turn.user {
   margin-left: auto;
   border-color: rgba(var(--accent-rgb), 0.35);
-  background: linear-gradient(160deg, rgba(var(--accent-rgb), 0.1), rgba(var(--accent-rgb), 0.04));
+  background: rgba(13, 32, 40, 1); /* A29 fix: was a low-alpha gradient - solid accent-tinted fill keeps user/assistant distinguishable without losing legibility */
   border-bottom-right-radius: 2px; /* tail toward the edge it's anchored to */
 }
 .turn.assistant {
@@ -381,8 +434,8 @@ main { flex: 1; overflow: hidden; display: flex; }
   font-size: 11px;
   font-variant-numeric: tabular-nums; /* A28: the countdown digit shouldn't reflow the chip width as it ticks down */
   color: var(--accent);
-  background: rgba(var(--accent-rgb), 0.07);
-  box-shadow: var(--elevate-sm); /* A29 */
+  background: rgba(13, 32, 40, 1); /* A29 fix: was 0.07 accent alpha */
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14); /* A29 */
 }
 
 /* ---- latency ----
@@ -405,8 +458,14 @@ main { flex: 1; overflow: hidden; display: flex; }
   margin-bottom: var(--space-4);
   border: 1px solid rgba(var(--accent-rgb), 0.45);
   border-radius: 10px;
-  background: radial-gradient(ellipse at top left, rgba(var(--accent-rgb), 0.1), rgba(var(--accent-rgb), 0.04));
-  box-shadow: var(--elevate-lg);
+  /* A29 fix: layered on top of a solid --content-fill-accent base (was
+     a 0.04-0.1 alpha gradient alone, which read as barely-there over a
+     busy desktop) - the gradient stays for the "light source" depth
+     cue, the solid layer under it is what actually makes the hero
+     number legible. */
+  background: radial-gradient(ellipse at top left, rgba(var(--accent-rgb), 0.14), transparent 70%), rgba(13, 32, 40, 1);
+  isolation: isolate; /* A29 fix: see .scroll-list's comment */
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 14px 32px -10px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(57, 230, 255, 0.22), 0 0 40px -8px rgba(57, 230, 255, 0.25);
 }
 .derived-readout .big {
   font-size: 34px;
@@ -426,11 +485,12 @@ main { flex: 1; overflow: hidden; display: flex; }
   margin-bottom: 6px;
 }
 .card {
-  background: rgba(var(--accent-rgb), 0.05);
+  background: rgba(5, 9, 14, 1); /* A29 fix: was 0.05 accent alpha */
+  isolation: isolate; /* A29 fix: see .scroll-list's comment */
   border: 1px solid rgba(var(--accent-rgb), 0.22);
   border-radius: 6px;
   padding: 9px 11px;
-  box-shadow: var(--elevate-sm); /* A29: real but deliberately smaller than the hero's --elevate-lg - the shadow tier itself is part of the hierarchy signal */
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset, 0 6px 16px -6px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(57, 230, 255, 0.14); /* A29: real but deliberately smaller than the hero's --elevate-lg - the shadow tier itself is part of the hierarchy signal */
 }
 .card .label { font-size: 10.5px; color: #85acb9; letter-spacing: 0.04em; text-transform: uppercase; } /* A28: brightened from #7fa6b3 */
 .card .value {
@@ -453,8 +513,13 @@ main { flex: 1; overflow: hidden; display: flex; }
    reading a single label. */
 #memory-body { flex: 1; display: flex; gap: 10px; overflow: hidden; }
 .col { flex: 1; border: 1px solid rgba(var(--accent-rgb), 0.18); border-radius: 8px; padding: 4px; }
-#memory-sessions { background: var(--material-recess); box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.3); }
-#memory-entries { background: rgba(var(--accent-rgb), 0.02); }
+/* A29 fix: both columns are real reading surfaces (a session list, an
+   entry list) - .material-recess/0.02 alpha were both far too close to
+   transparent to read over a busy desktop. Sessions (nav) stays
+   perceptibly heavier than entries (content), same split as before,
+   just both now solid enough to actually read. */
+#memory-sessions { background: rgba(2, 4, 7, 1); box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.3); isolation: isolate; }
+#memory-entries { background: rgba(5, 9, 14, 1); isolation: isolate; }
 
 .session-row, .entry-row {
   padding: 7px 9px;
